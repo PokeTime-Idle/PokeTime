@@ -1,0 +1,1 @@
+function r(t,n=""){return typeof t=="string"?t.length>0?t:n:t==null?n:typeof t=="number"||typeof t=="boolean"||typeof t=="bigint"?String(t):n}function e(t,n){return typeof t=="string"&&t.length>0?t:n}export{r as n,e as t};

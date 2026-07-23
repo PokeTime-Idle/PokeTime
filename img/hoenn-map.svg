@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-label="Hoenn placeholder map">
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b4f6c"/>
+      <stop offset="100%" stop-color="#1f7a8c"/>
+    </linearGradient>
+    <linearGradient id="land" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5f8f3d"/>
+      <stop offset="100%" stop-color="#89b45b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="800" fill="url(#sea)"/>
+  <path d="M110 620 C260 420, 470 380, 650 460 C770 520, 860 500, 1010 340 L1060 380 C960 560, 810 680, 620 700 C420 720, 250 700, 120 660 Z" fill="url(#land)" opacity="0.96"/>
+  <path d="M700 170 C780 120, 920 140, 1030 230 C910 350, 760 340, 670 260 Z" fill="url(#land)" opacity="0.9"/>
+  <path d="M460 160 C520 110, 630 120, 700 190 C620 280, 500 280, 430 210 Z" fill="url(#land)" opacity="0.9"/>
+  <text x="600" y="72" text-anchor="middle" fill="#f4f7fb" font-family="Verdana, Arial, sans-serif" font-size="38" font-weight="700">HOENN PLACEHOLDER MAP</text>
+  <text x="600" y="110" text-anchor="middle" fill="#dbe7f0" font-family="Verdana, Arial, sans-serif" font-size="18">Hotspots are enabled; replace this asset with the final Hoenn map anytime.</text>
+</svg>

@@ -1,0 +1,1 @@
+import{t}from"./index-client-C8OYeD0M.js";import{o as c}from"./gameFacade-iy05o6vu.js";function f(o,s){const a=(Array.isArray(o)?o:[o]).map(r=>c.subscribe(r,s));t(()=>{for(const r of a)r()})}export{f as t};

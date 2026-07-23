@@ -1,0 +1,1994 @@
+﻿<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <base href="./">
+    <!--
+        Content Security Policy (cf. AUDIT_SECURITE.md §4).
+        Version pragmatique compatible itch.io (jeu HTML5 servi en iframe).
+        - 'unsafe-inline' sur script-src/style-src est conserve : index.html
+          contient des scripts/styles inline pour le boot (echelle desktop,
+          gestion d'orientation), retirer 'unsafe-inline' demanderait une
+          refonte non triviale et est hors scope d'une publi itch.io.
+        - object-src 'none' bloque toute injection d'objet/embed flash.
+        - base-uri 'self' empeche le detournement de base href par injection.
+        - img-src whiteliste les CDN sprites + data:/blob: pour les assets
+          generes a la volee (sw cache, exports).
+        - script-src / connect-src : Cloudflare Web Analytics (beacon + RUM).
+    -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com;
+        style-src 'self' 'unsafe-inline';
+        font-src 'self' data:;
+        img-src 'self' data: blob: https://raw.githubusercontent.com https://play.pokemonshowdown.com;
+        connect-src 'self' https://cloudflareinsights.com;
+        media-src 'self' data:;
+        worker-src 'self';
+        manifest-src 'self';
+        object-src 'none';
+        base-uri 'self';
+        form-action 'self';
+    ">
+    <title>PokeTime</title>
+    <link rel="preload" as="image" href="./assets/start-menu-dWouUg9I.webp" fetchpriority="high">
+    <link rel="icon" type="image/png" href="./assets/favicon-noctali-C0GynSZQ.png">
+    <link rel="preconnect" href="https://raw.githubusercontent.com" crossorigin>
+    <link rel="dns-prefetch" href="//raw.githubusercontent.com">
+    <link rel="preconnect" href="https://play.pokemonshowdown.com" crossorigin>
+    <link rel="dns-prefetch" href="//play.pokemonshowdown.com">
+
+    <script>
+        /*
+         * Échelle desktop : refs sur :root (styles.css), facteur --game-scale injecté ici.
+         * - cover (défaut) : max(lw/refW, lh/refH) × COVER_SCALE_SLACK — plein écran, sauf viewport plus « haut » que le canevas (ex. 16:10) : min() + valign top + --game-ref-h-display (zone jeu jusqu’en bas).
+         * - contain : min(...) — tout visible. setGameScaleFit('contain' | 'cover'). ?gameFit=contain force contain.
+         */
+        (function () {
+            var MQ_DESKTOP = '(min-width: 1201px)';
+            var mqDesktop = window.matchMedia(MQ_DESKTOP);
+            var viewportResizeObserver = null;
+            /* Petite marge sous le cover mathématique : sous-pixels au resize + léger « respir » visuel. */
+            var COVER_SCALE_SLACK = 1;
+            var scaleRafId = 0;
+
+            function initGameScaleFitFromQuery() {
+                var root = document.documentElement;
+                try {
+                    var p = new URLSearchParams(window.location.search);
+                    if (p.has('gameFit')) {
+                        if (p.get('gameFit') === 'contain') {
+                            root.removeAttribute('data-game-scale-fit');
+                            sessionStorage.setItem('gameScaleFit', 'contain');
+                        } else {
+                            root.setAttribute('data-game-scale-fit', 'cover');
+                            sessionStorage.setItem('gameScaleFit', 'cover');
+                        }
+                        return;
+                    }
+                    if (sessionStorage.getItem('gameScaleFit') === 'contain') {
+                        root.removeAttribute('data-game-scale-fit');
+                        return;
+                    }
+                    root.setAttribute('data-game-scale-fit', 'cover');
+                    sessionStorage.setItem('gameScaleFit', 'cover');
+                } catch (e) {
+                    root.setAttribute('data-game-scale-fit', 'cover');
+                }
+            }
+
+            function readLogicalRef(root) {
+                var cs = getComputedStyle(root);
+                var rw = parseFloat(cs.getPropertyValue('--game-ref-w').trim());
+                var rh = parseFloat(cs.getPropertyValue('--game-ref-h').trim());
+                /* Valeurs par défaut = :root dans styles.css si les variables ne sont pas encore disponibles */
+                if (!Number.isFinite(rw) || rw <= 0) rw = 1920;
+                if (!Number.isFinite(rh) || rh <= 0) rh = 1080;
+                return { rw: rw, rh: rh };
+            }
+
+            function readViewportPixels() {
+                var el = document.querySelector('.game-viewport');
+                if (el) {
+                    /* client* = entiers, sans barre de défilement — plus stable que getBoundingClientRect / 100vw au resize */
+                    var cw = el.clientWidth;
+                    var ch = el.clientHeight;
+                    if (cw > 1 && ch > 1) {
+                        return { vw: cw, vh: ch };
+                    }
+                    var r = el.getBoundingClientRect();
+                    if (r.width > 1 && r.height > 1) {
+                        return { vw: r.width, vh: r.height };
+                    }
+                }
+                var vv = window.visualViewport;
+                if (vv && vv.width > 1 && vv.height > 1) {
+                    return { vw: vv.width, vh: vv.height };
+                }
+                return { vw: window.innerWidth, vh: window.innerHeight };
+            }
+
+            function syncGameViewportScale() {
+                var root = document.documentElement;
+                if (!mqDesktop.matches) {
+                    root.style.removeProperty('--game-scale');
+                    root.style.removeProperty('--game-ref-h-display');
+                    root.removeAttribute('data-game-scale-valign');
+                    return;
+                }
+                var ref = readLogicalRef(root);
+                var size = readViewportPixels();
+                var sw = size.vw / ref.rw;
+                var sh = size.vh / ref.rh;
+                var coverPref = false;
+                try {
+                    coverPref = sessionStorage.getItem('gameScaleFit') !== 'contain';
+                } catch (e) {
+                    coverPref = root.getAttribute('data-game-scale-fit') === 'cover';
+                }
+                var cover = coverPref;
+                var refAspect = ref.rw / ref.rh;
+                var vpAspect = size.vw / size.vh;
+                var useFitWidth = vpAspect < refAspect;
+                /* Écrans plus hauts que le canevas (ex. 2560×1600) : fit-width + ancrage haut (pas le CSS cover) */
+                if (useFitWidth) {
+                    cover = false;
+                    root.removeAttribute('data-game-scale-fit');
+                    root.setAttribute('data-game-scale-valign', 'top');
+                } else {
+                    root.removeAttribute('data-game-scale-valign');
+                    root.style.removeProperty('--game-ref-h-display');
+                    if (coverPref) {
+                        root.setAttribute('data-game-scale-fit', 'cover');
+                    } else {
+                        root.removeAttribute('data-game-scale-fit');
+                    }
+                }
+                var s = cover ? Math.max(sw, sh) * COVER_SCALE_SLACK : Math.min(sw, sh);
+                root.style.setProperty('--game-scale', String(s));
+                if (useFitWidth) {
+                    root.style.setProperty('--game-ref-h-display', String(size.vh / s));
+                }
+            }
+
+            function scheduleSyncGameViewportScale() {
+                if (scaleRafId) return;
+                scaleRafId = requestAnimationFrame(function () {
+                    scaleRafId = 0;
+                    syncGameViewportScale();
+                });
+            }
+
+            function attachViewportObservers() {
+                if (viewportResizeObserver || typeof ResizeObserver === 'undefined') return;
+                var el = document.querySelector('.game-viewport');
+                if (!el) return;
+                viewportResizeObserver = new ResizeObserver(function () {
+                    scheduleSyncGameViewportScale();
+                });
+                viewportResizeObserver.observe(el);
+            }
+
+            initGameScaleFitFromQuery();
+            syncGameViewportScale();
+            window.setGameScaleFit = function (mode) {
+                var root = document.documentElement;
+                try {
+                    if (mode === 'cover') {
+                        root.setAttribute('data-game-scale-fit', 'cover');
+                        sessionStorage.setItem('gameScaleFit', 'cover');
+                    } else {
+                        root.removeAttribute('data-game-scale-fit');
+                        sessionStorage.setItem('gameScaleFit', 'contain');
+                    }
+                } catch (e) {
+                    if (mode === 'cover') {
+                        root.setAttribute('data-game-scale-fit', 'cover');
+                    } else {
+                        root.removeAttribute('data-game-scale-fit');
+                    }
+                }
+                syncGameViewportScale();
+            };
+            window.addEventListener('resize', scheduleSyncGameViewportScale);
+            window.addEventListener('orientationchange', function () {
+                scheduleSyncGameViewportScale();
+            });
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', scheduleSyncGameViewportScale);
+            }
+            document.addEventListener('DOMContentLoaded', function () {
+                syncGameViewportScale();
+                attachViewportObservers();
+            });
+            if (mqDesktop.addEventListener) {
+                mqDesktop.addEventListener('change', function () {
+                    scheduleSyncGameViewportScale();
+                    if (mqDesktop.matches) attachViewportObservers();
+                });
+            }
+        })();
+    </script>
+
+    <!-- PWA / Mode Installation Web App -->
+    <script>
+        (function () {
+            const isWebContext = window.location.protocol === 'http:' || window.location.protocol === 'https:';
+            if (!isWebContext) return;
+            const manifestLink = document.createElement('link');
+            manifestLink.rel = 'manifest';
+            manifestLink.href = 'manifest.json';
+            document.head.appendChild(manifestLink);
+        })();
+    </script>
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Pokétime">
+    <link rel="apple-touch-icon" href="./assets/favicon-noctali-C0GynSZQ.png">
+
+    <!--
+        spriteFallback.js — inline pour garantir l'exécution avant tout <img>.
+        Cf. AUDIT_SECURITE.md T5 / PlanV3 Phase 2.
+    -->
+    <script>
+        /**
+         * @file spriteFallback.js
+         * Fallback global pour les sprites distants (cf. AUDIT_SECURITE.md T5 / §5b).
+         *
+         * Pourquoi : le jeu charge ~250 <img> depuis des CDN distants
+         * (raw.githubusercontent.com, play.pokemonshowdown.com). En cas de rate-limit,
+         * de DNS down, ou de filtrage du Referer itch.zone, ces images affichent un
+         * carre casse (icone "image absente"). Pour un jeu de combat de creatures,
+         * c'est tres visible et ca donne une impression de jeu non-fini.
+         *
+         * Strategie : delegation globale d'evenement `error` en phase capture
+         * (`error` ne bubble pas, donc on est OBLIGE d'utiliser la phase capture).
+         * Aucune call-site existante n'a besoin d'etre modifiee.
+         *
+         * Anti-loop : on tagge l'element via dataset.spriteFallbackApplied pour
+         * eviter une cascade infinie si la silhouette elle-meme echoue.
+         */
+        (function () {
+            if (typeof document === 'undefined') return;
+        
+            var FALLBACK_SRC = 'img/placeholder-pikachu.png';
+            var REMOTE_HOSTS = [
+                'raw.githubusercontent.com',
+                'play.pokemonshowdown.com',
+            ];
+        
+            function isRemoteSpriteHost(src) {
+                if (!src) return false;
+                for (var i = 0; i < REMOTE_HOSTS.length; i++) {
+                    if (src.indexOf('://' + REMOTE_HOSTS[i]) !== -1) return true;
+                    if (src.indexOf('//' + REMOTE_HOSTS[i]) === 0) return true;
+                }
+                return false;
+            }
+        
+            // Compteur global de fallbacks par host (cf. AUDIT_SECURITE.md T8 / §5b).
+            // Permet de mesurer en prod si GitHub/Showdown rate-limite vraiment :
+            // ouvrir la console du jeu publie et taper `POKETIME_SPRITE_FALLBACK_STATS`
+            // pour avoir le nombre d'images qui ont du basculer sur la silhouette.
+            // Si > 5-10 % des sprites tombent en fallback, c'est le moment d'envisager
+            // un mirror CDN (cf. C3 dans l'audit).
+            var stats = {
+                total: 0,
+                byHost: Object.create(null),
+                firstAt: null,
+                lastAt: null,
+                samples: [],
+            };
+        
+            function recordFallback(originalSrc) {
+                stats.total++;
+                var now = Date.now();
+                if (!stats.firstAt) stats.firstAt = now;
+                stats.lastAt = now;
+                for (var i = 0; i < REMOTE_HOSTS.length; i++) {
+                    if (originalSrc.indexOf(REMOTE_HOSTS[i]) !== -1) {
+                        stats.byHost[REMOTE_HOSTS[i]] = (stats.byHost[REMOTE_HOSTS[i]] || 0) + 1;
+                        break;
+                    }
+                }
+                // 5 premiers samples uniquement (debug, evite de leak en memoire)
+                if (stats.samples.length < 5) stats.samples.push(originalSrc);
+            }
+        
+            function handleSpriteError(event) {
+                var target = event && event.target;
+                if (!target || target.tagName !== 'IMG') return;
+                if (target.dataset && target.dataset.spriteFallbackApplied === '1') return;
+                var currentSrc = target.currentSrc || target.src || '';
+                if (!isRemoteSpriteHost(currentSrc)) return;
+                if (target.dataset) target.dataset.spriteFallbackApplied = '1';
+                target.classList && target.classList.add('sprite-fallback');
+                if (target.dataset) target.dataset.spriteOriginalSrc = currentSrc;
+                recordFallback(currentSrc);
+                target.src = FALLBACK_SRC;
+            }
+        
+            document.addEventListener('error', handleSpriteError, true);
+        
+            // Expose le compteur en lecture seule sur window (pour monitoring console).
+            if (typeof window !== 'undefined') {
+                try {
+                    Object.defineProperty(window, 'POKETIME_SPRITE_FALLBACK_STATS', {
+                        get: function () {
+                            return {
+                                total: stats.total,
+                                byHost: Object.assign({}, stats.byHost),
+                                firstAt: stats.firstAt,
+                                lastAt: stats.lastAt,
+                                samples: stats.samples.slice(),
+                            };
+                        },
+                        configurable: false,
+                    });
+                } catch (_) { /* navigateur tres ancien : on s'en passe */ }
+            }
+        })();
+        
+    </script>
+    <!-- levelupOverrides.json est importé dans src/main.ts ; ctCompatibility.json est lazy-fetch via gameItemSystem.ts. -->
+
+
+    <!-- Vite entry point -->
+
+  <script type="module" crossorigin src="./assets/index-Dct6_3n9.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/index-client-C8OYeD0M.js">
+  <link rel="modulepreload" crossorigin href="./assets/preload-helper-BW0DDoJi.js">
+  <link rel="modulepreload" crossorigin href="./assets/shopAndAggregation-DU8iAvEc.js">
+  <link rel="modulepreload" crossorigin href="./assets/formatters-DAqG1nVV.js">
+  <link rel="modulepreload" crossorigin href="./assets/i18n-CMlE-exc.js">
+  <link rel="modulepreload" crossorigin href="./assets/regionalResonance-D1qqpDAc.js">
+  <link rel="modulepreload" crossorigin href="./assets/talentsAndCombat-BGzsfxYS.js">
+  <link rel="modulepreload" crossorigin href="./assets/regionalResonance-CfWbX7jY.js">
+  <link rel="modulepreload" crossorigin href="./assets/evolutions-C401mk4p.js">
+  <link rel="modulepreload" crossorigin href="./assets/coerceStr-rQNRRBh4.js">
+  <link rel="modulepreload" crossorigin href="./assets/modals-C__Xh1ll.js">
+  <link rel="modulepreload" crossorigin href="./assets/miltankFarmLogic-D-Hzp_EF.js">
+  <link rel="modulepreload" crossorigin href="./assets/speciesNaturalRarity-D8XpR2_Y.js">
+  <link rel="modulepreload" crossorigin href="./assets/berryTreeSnapshot-COdAC_5w.js">
+  <link rel="modulepreload" crossorigin href="./assets/zRingLogic-Dkm8Fl_z.js">
+  <link rel="modulepreload" crossorigin href="./assets/guardianOverworldSprites-D5u38czu.js">
+  <link rel="modulepreload" crossorigin href="./assets/pub-B8FmoijI.js">
+  <link rel="modulepreload" crossorigin href="./assets/combatHpRatio-DMIMvAEZ.js">
+  <link rel="modulepreload" crossorigin href="./assets/miltankFarmSnapshot-DqBKTBve.js">
+  <link rel="modulepreload" crossorigin href="./assets/rolldown-runtime-DLHw7_DS.js">
+  <link rel="modulepreload" crossorigin href="./assets/academyCoursesSnapshot-BDAo560N.js">
+  <link rel="modulepreload" crossorigin href="./assets/pokePelagoSnapshot-CwhE6_lz.js">
+  <link rel="modulepreload" crossorigin href="./assets/regionsRuntime-CJvQ9eL5.js">
+  <link rel="modulepreload" crossorigin href="./assets/lazyModalMounts-DqKNxw2Q.js">
+  <link rel="modulepreload" crossorigin href="./assets/nationalDexGeneration-DZqQXCnR.js">
+  <link rel="modulepreload" crossorigin href="./assets/toastManager-CrU9bmyt.js">
+  <link rel="modulepreload" crossorigin href="./assets/gameFacade-iy05o6vu.js">
+  <link rel="modulepreload" crossorigin href="./assets/questsAchievements-BLwtMDHv.js">
+  <link rel="modulepreload" crossorigin href="./assets/headerSkinUnlock-CngNMxWs.js">
+  <link rel="modulepreload" crossorigin href="./assets/pokemartDust-Tln2jqu2.js">
+  <link rel="modulepreload" crossorigin href="./assets/teamSynergyEvaluation-BdoA0E-j.js">
+  <link rel="modulepreload" crossorigin href="./assets/evolutionModalBridge-NZcCAadu.js">
+  <link rel="modulepreload" crossorigin href="./assets/storageSortUtils-OiCKBTTW.js">
+  <link rel="modulepreload" crossorigin href="./assets/publishHooks-E1JvhbFq.js">
+  <link rel="modulepreload" crossorigin href="./assets/evolutionRegionGate-cDIwIe6Y.js">
+  <link rel="modulepreload" crossorigin href="./assets/uiScrollPreserve-zOlOcvR5.js">
+  <link rel="modulepreload" crossorigin href="./assets/questSystem-DjU3IT-1.js">
+  <link rel="modulepreload" crossorigin href="./assets/relicModalBridge-S4twwb71.js">
+  <link rel="modulepreload" crossorigin href="./assets/callBound-B81HSFVX.js">
+  <link rel="modulepreload" crossorigin href="./assets/combatEntryTickets-Bc4n8jMN.js">
+  <link rel="modulepreload" crossorigin href="./assets/facadeEntry-DhuiDSeG.js">
+  <link rel="modulepreload" crossorigin href="./assets/team.svelte-DpdTyYia.js">
+  <link rel="modulepreload" crossorigin href="./assets/scheduleTooltipHelpers-DSH4Gwgb.js">
+  <link rel="modulepreload" crossorigin href="./assets/captureAnimation-L9TOwzPO.js">
+  <link rel="modulepreload" crossorigin href="./assets/subwayTrainerSpriteUrl-8a-kPims.js">
+  <link rel="modulepreload" crossorigin href="./assets/martAutoPurchaseSnapshot-B0tgFdA-.js">
+  <link rel="modulepreload" crossorigin href="./assets/shopSnapshot-CwXLjU4o.js">
+  <link rel="modulepreload" crossorigin href="./assets/championsTowerSystem-CTgQMgR8.js">
+  <link rel="modulepreload" crossorigin href="./assets/arenaSnapshot-D4CJ_nHG.js">
+  <link rel="modulepreload" crossorigin href="./assets/questRewardTooltips-DiuRwHVr.js">
+  <link rel="modulepreload" crossorigin href="./assets/dailyLogin.svelte-DECNgX8f.js">
+  <link rel="modulepreload" crossorigin href="./assets/disclose-version-D3YQDzf-.js">
+  <link rel="modulepreload" crossorigin href="./assets/feticheSnapshot-BWrzZ2r9.js">
+  <link rel="modulepreload" crossorigin href="./assets/portalToBody-Dfghkpdq.js">
+  <link rel="modulepreload" crossorigin href="./assets/rocketSnapshotBuilder-DP2eYlxC.js">
+  <link rel="modulepreload" crossorigin href="./assets/rocketCasinoSnapshot-C5xRkzIO.js">
+  <link rel="modulepreload" crossorigin href="./assets/rocketSnapshot-C8cJjD4e.js">
+  <link rel="modulepreload" crossorigin href="./assets/useFacadeSubscription-B6cOeXrD.js">
+  <link rel="modulepreload" crossorigin href="./assets/useGameLanguageTick.svelte-DoVpn6SG.js">
+  <link rel="modulepreload" crossorigin href="./assets/tooltips-BWalmFtu.js">
+  <link rel="stylesheet" crossorigin href="./assets/index-w0VZ1xx3.css">
+</head>
+
+
+<body>
+    <div id="updateBanner" class="update-banner" hidden aria-live="polite">
+        <span class="update-banner-text" id="updateBannerText">Une nouvelle version est disponible !</span>
+        <button type="button" class="update-banner-action" id="updateBannerAction">Mettre à jour</button>
+        <button type="button" class="update-banner-close" id="updateBannerClose" aria-label="Fermer">×</button>
+    </div>
+    <div id="saveSlotBootModal" class="save-slot-boot-modal" role="dialog" aria-modal="true" aria-labelledby="saveSlotBootTitle">
+        <aside id="saveSlotBootChangelog" class="save-slot-boot-changelog" aria-labelledby="saveSlotBootChangelogTitle">
+            <p id="saveSlotBootChangelogTitle" class="save-slot-boot-changelog-title"></p>
+            <a id="saveSlotBootChangelogDiscordLink" class="save-slot-link-btn"
+               href="https://discord.gg/MTcngHhVG"
+               target="_blank" rel="noopener noreferrer">Discord</a>
+        </aside>
+        <div class="save-slot-boot-content">
+            <h1 id="saveSlotBootTitle" class="save-slot-boot-title">
+                <img src="./assets/start-menu-dWouUg9I.webp" alt="Sélection de sauvegarde" class="save-slot-boot-title-sprite" width="560" height="120" loading="eager" decoding="sync" fetchpriority="high">
+            </h1>
+            <p class="save-slot-boot-subtitle">Pick a slot to continue, or create a new Player.</p>
+            <div id="saveSlotBootLanguage" class="save-slot-boot-language" role="group" aria-label="Language">
+                <button type="button" class="save-slot-lang-flag" data-lang="fr" aria-pressed="false" title="Français">
+                    <img class="save-slot-lang-flag-img" src="data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%203%202'%20role='img'%20aria-hidden='true'%3e%3crect%20width='1'%20height='2'%20fill='%23002395'/%3e%3crect%20x='1'%20width='1'%20height='2'%20fill='%23ffffff'/%3e%3crect%20x='2'%20width='1'%20height='2'%20fill='%23ed2939'/%3e%3c/svg%3e" alt="" width="28" height="19" decoding="async">
+                </button>
+                <button type="button" class="save-slot-lang-flag" data-lang="en" aria-pressed="false" title="English">
+                    <img class="save-slot-lang-flag-img" src="data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2060%2030'%20role='img'%20aria-hidden='true'%3e%3cclipPath%20id='gb-s'%3e%3cpath%20d='M0,0%20v30%20h60%20v-30%20z'/%3e%3c/clipPath%3e%3cclipPath%20id='gb-t'%3e%3cpath%20d='M30,15%20h30%20v15%20z%20v15%20h-30%20z%20h-30%20v-15%20z%20v-15%20h30%20z'/%3e%3c/clipPath%3e%3cg%20clip-path='url(%23gb-s)'%3e%3cpath%20d='M0,0%20v30%20h60%20v-30%20z'%20fill='%23012169'/%3e%3cpath%20d='M0,0%2060,30%20M60,0%200,30'%20stroke='%23fff'%20stroke-width='6'/%3e%3cpath%20d='M0,0%2060,30%20M60,0%200,30'%20clip-path='url(%23gb-t)'%20stroke='%23c8102e'%20stroke-width='4'/%3e%3cpath%20d='M30,0%20v30%20M0,15%20h60'%20stroke='%23fff'%20stroke-width='10'/%3e%3cpath%20d='M30,0%20v30%20M0,15%20h60'%20stroke='%23c8102e'%20stroke-width='6'/%3e%3c/g%3e%3c/svg%3e" alt="" width="28" height="14" decoding="async">
+                </button>
+            </div>
+            <div id="saveSlotBootDiscord" class="save-slot-external-links">
+                <a id="saveSlotDiscordLink" class="save-slot-link-btn"
+                   href="https://discord.gg/MTcngHhVG"
+                   target="_blank" rel="noopener noreferrer">Discord</a>
+                <a id="saveSlotRedditLink" class="save-slot-link-btn"
+                   href="https://www.reddit.com/r/PokeTime/"
+                   target="_blank" rel="noopener noreferrer">Reddit</a>
+                <p id="saveSlotBootDesktopNotice" class="save-slot-boot-desktop-notice" role="note">Ce jeu est conçu pour être joué sur ordinateur.</p>
+            </div>
+            <div id="saveSlotCards" class="save-slot-cards"></div>
+            <div id="saveSlotBootError" class="save-slot-boot-error"></div>
+
+            <div id="saveSlotCreatePanel" class="save-slot-create-panel">
+                <h2 id="saveSlotCreateTitle">Nouveau Player</h2>
+                <label class="save-slot-input-label" for="saveSlotNameInput">
+                    <span>Pseudo</span>
+                    <input id="saveSlotNameInput" type="text" maxlength="20" autocomplete="off" placeholder="Votre pseudo">
+                </label>
+                <div id="saveSlotSpriteGrid" class="save-slot-sprite-grid"></div>
+                <div class="save-slot-create-actions">
+                    <button type="button" id="saveSlotCreateConfirm" class="btn save-slot-confirm-btn">Créer ce Player</button>
+                    <button type="button" id="saveSlotCreateCancel" class="btn save-slot-cancel-btn">Annuler</button>
+                </div>
+            </div>
+            <p id="saveSlotBootDisclaimer" class="save-slot-boot-disclaimer" role="note">PokeTime est un jeu de fans gratuit et non commercial. Pokémon, ainsi que les noms, personnages et visuels associés, sont la propriété de Nintendo, Creatures Inc. et GAME FREAK inc. Ce projet n'est ni approuvé, ni affilié, ni sponsorisé par The Pokémon Company, Nintendo, Creatures Inc. ou GAME FREAK inc.</p>
+        </div>
+    </div>
+
+    <div class="game-viewport">
+        <div class="game-scale-surface">
+            <div class="game-container">
+        <div class="header-afk-stack">
+        <div class="header">
+            <div class="header-unified-row">
+
+                <div class="combat-stats-group">
+                    <div class="stat-chip header-stat-chip" id="headerStatHP" data-stat="hp">
+                        <span class="stat-label" id="headerStatLabelHp">HP :</span>
+                        <span class="stat-value">0</span>
+                        <span class="stat-chip-boost-icon" title="">+</span>
+                        <span class="stat-sub-info">(<span id="playerHPGain">+0/s</span>)</span>
+                    </div>
+                    <div class="stat-chip header-stat-chip" id="headerStatAtk" data-stat="attack">
+                        <span class="stat-label" id="headerStatLabelAtk">ATK :</span>
+                        <span class="stat-value">0</span>
+                        <span class="stat-chip-boost-icon" title="">+</span>
+                        <span class="stat-sub-info">(<span id="playerAttackGain">+0/s</span>)</span>
+                    </div>
+                    <div class="stat-chip header-stat-chip" id="headerStatSpAtk" data-stat="spattack">
+                        <span class="stat-label" id="headerStatLabelSpAtk">ATK SP :</span>
+                        <span class="stat-value">0</span>
+                        <span class="stat-chip-boost-icon" title="">+</span>
+                        <span class="stat-sub-info">(<span id="playerSpAttackGain">+0/s</span>)</span>
+                    </div>
+                    <div class="stat-chip header-stat-chip" id="headerStatDef" data-stat="defense">
+                        <span class="stat-label" id="headerStatLabelDef">DEF :</span>
+                        <span class="stat-value">0</span>
+                        <span class="stat-chip-boost-icon" title="">+</span>
+                        <span class="stat-sub-info">(<span id="playerDefenseGain">+0/s</span>)</span>
+                    </div>
+                    <div class="stat-chip header-stat-chip" id="headerStatSpDef" data-stat="spdefense">
+                        <span class="stat-label" id="headerStatLabelSpDef">DEF SP :</span>
+                        <span class="stat-value">0</span>
+                        <span class="stat-chip-boost-icon" title="">+</span>
+                        <span class="stat-sub-info">(<span id="playerSpDefenseGain">+0/s</span>)</span>
+                    </div>
+                    <div class="stat-chip header-stat-chip" id="headerStatSpd" data-stat="speed">
+                        <span class="stat-label" id="headerStatLabelSpd">SPD :</span>
+                        <span class="stat-value">0</span>
+                        <span class="stat-chip-boost-icon" title="">+</span>
+                        <span class="stat-sub-info">(<span id="playerSpeedGain">+0/s</span>)</span>
+                    </div>
+                </div>
+
+                <div class="header-separator"></div>
+
+                <div class="resources-group">
+                    <div class="resource-chip" id="headerStatMoney">
+                        <img id="headerMoneyIcon" src="./assets/pokedollars-BdBkFrc7.png" class="resource-icon resource-icon-img" alt="Pokédollars">
+                        <div>
+                            <div class="resource-val">0</div>
+                            <div class="resource-name" id="resourceMoneyNameLabel">Dollars</div>
+                        </div>
+                    </div>
+                    <div class="resource-chip" id="headerStatTokens">
+                        <img id="headerTokensIcon" src="https://raw.githubusercontent.com/msikma/pokesprite/master/items/key-item/magma-emblem.png" class="resource-icon resource-icon-img" alt="Jetons">
+                        <div>
+                            <div class="resource-val">0</div>
+                            <div class="resource-name" id="resourceTokensNameLabel">Jetons</div>
+                        </div>
+                    </div>
+                    <div class="resource-chip" id="headerStatMarques">
+                        <img id="headerMarksIcon" src="https://raw.githubusercontent.com/msikma/pokesprite/master/items/valuable-item/relic-crown.png" class="resource-icon resource-icon-img" alt="Marques">
+                        <div>
+                            <div class="resource-val">0</div>
+                            <div class="resource-name" id="resourceMarksNameLabel">Marques</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="header-separator"></div>
+
+                <div class="player-profile-group">
+                    <div id="headerPlayerProfile" class="player-profile-chip" data-action="openMasteryModal" style="cursor:pointer;" role="button" tabindex="0">
+                        <img id="headerPlayerSprite" src="https://play.pokemonshowdown.com/sprites/trainers/red.png" class="player-profile-sprite" alt="Player">
+                        <div class="player-profile-meta">
+                            <div class="player-profile-label">Player</div>
+                            <div id="headerPlayerName" class="player-profile-name">Joueur</div>
+                        </div>
+                        <span id="headerMasteryPointsBadgeWrap" class="header-mastery-points-badge-wrap" hidden>
+                            <span id="headerMasteryPointsBadge" class="tab-badge tab-badge-accept" role="img"></span>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="header-separator"></div>
+
+                <div class="header-buttons">
+                    <button id="openSaveManagerBtn" class="btn" data-action="openSaveManager"
+                        style="background: #334155; color: white; padding: 0 20px;">
+                        &#9776; <span id="openSaveManagerLabel">MENU</span></button>
+                </div>
+
+            </div>
+        </div>
+        <aside id="afkSummaryBar" class="afk-summary-bar" aria-label="Résumé équipe, DPS et farm (mode AFK)">
+            <div class="afk-summary-sect afk-summary-team" id="afkSummaryTeam"></div>
+            <div class="afk-summary-sect afk-summary-dps" id="afkSummaryDps"></div>
+            <div class="afk-summary-sect afk-summary-farm" id="afkSummaryFarm"></div>
+        </aside>
+        </div><!-- .header-afk-stack -->
+
+        <!-- mobile-active par défaut : évite le flash de page vide au resize/orientation tant que le JS
+             initMobileLayout() n'a pas encore tourné. Sur desktop, la classe est ignorée (CSS @media). -->
+        <div class="combat-area mobile-active">
+
+            <div class="zone-selector" id="zoneSelector">
+                <div class="zone-selector-header">
+                    <button type="button" id="zoneMapBtn" class="zone-map-btn" aria-expanded="false" aria-controls="zoneMapModal" data-action="openZoneMap"><span id="zoneMapBtnLabel">Carte</span></button>
+                    <label for="regionSelect" class="zone-map-label" id="regionSelectLabel">Region</label>
+                    <select id="regionSelect" class="region-select"></select>
+                    <div class="zone-info" id="zoneInfo">...</div>
+                </div>
+                <select id="zoneSelect" aria-hidden="true" tabindex="-1" class="zone-select-hidden"></select>
+            </div>
+
+            <div id="towerBuffsContainer" class="tower-buffs-container" style="display: none;">
+            </div>
+
+
+
+            <div class="battle-screen">
+                <div class="battle-display" id="battleDisplay">
+                    <div class="battle-zone-name" id="battleDisplayZoneName" aria-live="polite"></div>
+                    <div class="gym-champion-mini" id="gymChampionMini" style="display: none;" role="button" tabindex="0">
+                        <img id="gymChampionMiniSprite" src="" alt="" class="gym-champion-mini-sprite">
+                        <span id="gymChampionMiniName" class="gym-champion-mini-name"></span>
+                    </div>
+                    <div class="rival-zone-mini" id="rivalZoneMini" style="display: none;" role="button" tabindex="0" aria-label="Defier le Rival">
+                        <img id="rivalZoneMiniSprite" src="" alt="" class="rival-zone-mini-sprite">
+                        <span id="rivalZoneMiniName" class="rival-zone-mini-name"></span>
+                    </div>
+                    <div class="tower-speed-toggle-wrap" id="towerSpeedToggleWrap" style="display: none;">
+                        <button type="button" id="towerSpeedBtn" class="tower-speed-btn" title="Vitesse combat Tour (x2–x6 via Boutique Tour, étages déjà vaincus)" data-action="toggleTowerCombatSpeed">x1</button>
+                    </div>
+                    <div class="farming-metrics-btn-wrap">
+                        <button type="button" id="farmingMetricsBtn" class="farming-metrics-btn" data-action="openFarmingMetricsModal">&#128200;</button>
+                    </div>
+                    <div class="dps-meter-btn-wrap">
+                        <button type="button" id="dpsMeterBtn" class="dps-meter-btn" data-action="openDpsMeterModal">&#9876;&#65039;</button>
+                    </div>
+                    <div class="creature-display" id="playerSpriteContainer">
+                        <div id="eliteFourPlayerTrainerStrip" class="elite-four-trainer-strip player-side" style="display: none;" aria-hidden="true">
+                            <img id="eliteFourPlayerTrainerSprite" src="" alt="Joueur" class="elite-four-current-trainer-sprite">
+                            <span id="eliteFourPlayerTrainerName" class="elite-four-current-trainer-name">Joueur</span>
+                        </div>
+                        <div class="battle-sprite-anchor player-anchor">
+                            <div class="sprite-platform player"></div>
+                            <img src="" class="battle-sprite" id="playerSprite" loading="eager" decoding="async" fetchpriority="high" alt="" style="visibility:hidden">
+                        </div>
+                    </div>
+
+                    <div class="creature-display" id="enemySpriteContainer">
+                        <div id="eliteFourCurrentTrainerStrip" class="elite-four-trainer-strip enemy-side" style="display: none;" aria-hidden="true">
+                            <img id="eliteFourCurrentTrainerSprite" src="" alt="" class="elite-four-current-trainer-sprite">
+                            <span id="eliteFourCurrentTrainerName" class="elite-four-current-trainer-name"></span>
+                        </div>
+                        <div class="battle-sprite-anchor enemy-anchor">
+                            <div class="sprite-platform enemy"></div>
+                            <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/25.png"
+                                class="battle-sprite" id="enemySprite" loading="eager" decoding="async" fetchpriority="high">
+                        </div>
+                    </div>
+
+                    <!-- Bas de l'écran : barre de commandes GBA -->
+                    <div class="battle-display-bottom-stack">
+                        <div class="combat-controls-wrapper">
+                            <div class="combat-controls-left">
+                                <div id="captureSelectGroup" class="cmd-btn bouton-capture capture-off capture-btn-group"
+                                    role="group" aria-label="Capture ciblee">
+                                    <button id="captureModeBtn" class="capture-btn-main"
+                                        data-action="toggleCaptureMode"
+                                        role="switch" aria-checked="false"
+                                        aria-label="Capture ciblee desactivee (cliquez pour activer)">
+                                        <span id="captureTextShort">CAPT OFF</span>
+                                        <div class="capture-badge" id="captureBadge"></div>
+                                        <div class="capture-scope-indicator" id="captureScopeIndicator" aria-hidden="true">&#128064;</div>
+                                    </button>
+                                    <button id="captureSettingsBtn" class="capture-btn-gear"
+                                        data-action="openCaptureTargets">
+                                        <span aria-hidden="true">&#9881;</span>
+                                    </button>
+                                </div>
+                                <div id="autoSelectGroup" class="cmd-btn auto-btn-group" role="group"
+                                    aria-label="Mode Auto">
+                                    <button id="autoSelectBtn" class="auto-btn-main"
+                                        data-action="toggleAutoMaster"
+                                        role="switch" aria-checked="false"
+                                        aria-label="Mode Auto desactive (cliquez pour activer)">
+                                        <span id="autoTextShort">AUTO</span>
+                                        <div class="auto-badge" id="autoBadge"></div>
+                                    </button>
+                                    <button id="autoSettingsBtn" class="auto-btn-gear"
+                                        data-action="openAutoSettings">
+                                        <span aria-hidden="true">&#9881;</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="dpsLiveOverlay" class="dps-live-overlay" data-action="openDpsMeterModal"></div>
+                            <button id="forfeitBtn" class="cmd-btn forfeit" data-action="forfeitCombat">
+                                <span class="cmd-icon">&#10006;</span>
+                                <span class="forfeit-label" id="forfeitLabel">Abandon</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="battle-hud" id="battleHud">
+                    <div class="hud-player" style="position: relative;">
+
+                        <div class="hud-header-row">
+                            <div class="creature-name" id="playerCreatureName">-</div>
+                            <div class="hud-ult-mega-row">
+                            <button id="ultimateButton" class="ult-rect-btn" data-action="activateUltimate" disabled>
+                                <div class="ult-rect-fill" id="ultFill"></div>
+                                <div class="ult-rect-content">
+                                    <span id="ultText" style="font-weight:800; font-size:9px;">0%</span>
+                                </div>
+                            </button>
+                            <button id="megaEvolutionButton" class="ult-rect-btn mega-rect-btn" data-action="activateMegaEvolution" disabled type="button">
+                                <div class="ult-rect-fill mega-rect-fill" id="megaFill"></div>
+                                <div class="ult-rect-content">
+                                    <span id="megaText" style="font-weight:800; font-size:8px;">0%</span>
+                                </div>
+                            </button>
+                            </div>
+                        </div>
+                        <div class="creature-level" id="playerCreatureLevel">Niveau -</div>
+
+                        <div class="health-bar">
+                            <div class="health-fill" id="playerHealthFill" style="width: 100%"></div>
+                            <div class="health-text" id="playerHealthText">- / -</div>
+                        </div>
+
+                        <div class="atb-bar-container" style="position: relative;">
+
+                            <div id="playerATB" class="atb-fill"></div>
+
+                            <div id="playerATBStack" class="atb-stack-badge" style="display:none;">x2</div>
+
+                        </div>
+
+                        <div class="status-icons-container" id="playerStatusIcons"></div>
+                        <div class="stat-stage-icons-container" id="playerStatStageIcons"></div>
+                        <div class="hud-stats" id="playerHudStats">
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="playerHudLabelAtk">ATK</div>
+                                <div class="hud-stat-value" id="playerHudAtk">0</div>
+                            </div>
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="playerHudLabelSpAtk">ATK SP</div>
+                                <div class="hud-stat-value" id="playerHudSpAtk">0</div>
+                            </div>
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="playerHudLabelDef">DEF</div>
+                                <div class="hud-stat-value" id="playerHudDef">0</div>
+                            </div>
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="playerHudLabelSpDef">DEF SP</div>
+                                <div class="hud-stat-value" id="playerHudSpDef">0</div>
+                            </div>
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="playerHudLabelSpd">SPD</div>
+                                <div class="hud-stat-value" id="playerHudSpd">0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="hud-enemy">
+                        <div class="hud-name-row">
+                            <div class="creature-name" id="enemyCreatureName">-</div>
+                            <div id="effectivenessIndicator" class="effectiveness-indicator"></div>
+                        </div>
+
+                        <div class="creature-level" id="enemyCreatureLevel">Niveau -</div>
+
+                        <div class="health-bar">
+                            <div class="health-fill" id="enemyHealthFill" style="width: 100%"></div>
+                            <div class="health-text" id="enemyHealthText">- / -</div>
+                        </div>
+
+                        <div class="atb-bar-container">
+                            <div id="enemyATB" class="atb-fill"></div>
+                        </div>
+
+                        <div class="status-icons-container" id="enemyStatusIcons"></div>
+                        <div class="stat-stage-icons-container" id="enemyStatStageIcons"></div>
+                        <div class="hud-stats" id="enemyHudStats">
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="enemyHudLabelAtk">ATK</div>
+                                <div class="hud-stat-value" id="enemyHudAtk">0</div>
+                            </div>
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="enemyHudLabelSpAtk">ATK SP</div>
+                                <div class="hud-stat-value" id="enemyHudSpAtk">0</div>
+                            </div>
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="enemyHudLabelDef">DEF</div>
+                                <div class="hud-stat-value" id="enemyHudDef">0</div>
+                            </div>
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="enemyHudLabelSpDef">DEF SP</div>
+                                <div class="hud-stat-value" id="enemyHudSpDef">0</div>
+                            </div>
+                            <div class="hud-stat">
+                                <div class="hud-stat-pill" id="enemyHudLabelSpd">SPD</div>
+                                <div class="hud-stat-value" id="enemyHudSpd">0</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="team-area">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <h2 style="margin: 0;"><span id="teamMainTitleLabel">&Eacute;quipe Principale</span> (<span id="teamCount">0</span>)
+                        <span id="teamContributionInfoIcon" class="info-icon" data-touch-tooltip="teamContribution"
+                            style="font-size: 12px; cursor: help; color: #888; background: #2a2a2a; border-radius: 50%; width: 16px; height: 16px; display: inline-flex; justify-content: center; align-items: center; margin-left: 5px; border: 1px solid #444;">?</span>
+                    </h2>
+
+                    <button id="synergyBtn" class="synergy-btn" type="button"
+                        data-action="openSynergyListModal">
+                        <img id="synergyBtnSprite" src="./assets/synergy-off-BogUMRn0.png" class="synergy-btn-sprite" alt="Synergies">
+                    </button>
+                    <button id="teamLoadoutsBtn" type="button" class="sort-btn"
+                        data-action="showLoadoutManager" data-arg="team" style="margin-left:6px;">
+                        <span id="teamLoadoutsLabel">Loadouts</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="team-list" id="teamList"></div>
+            <div id="activeTalentsDisplay"></div>
+
+            <h3 style="margin-top: 20px; display: flex; align-items: center; gap: 8px;">
+                <span style="cursor: pointer;" data-action="togglePension"><span id="pensionTitleLabel">Pension</span> (<span id="pensionCount">0/0</span>)
+                    <span id="pensionToggleIcon">▶</span></span>
+                <button type="button" id="pensionLoadoutsBtn" class="sort-btn"
+                    data-action="showLoadoutManager" data-arg="pension" style="margin-left:6px;">
+                    <span id="pensionLoadoutsLabel">Loadouts</span>
+                </button>
+                <span id="pensionContributionInfoIcon" class="info-icon" data-touch-tooltip="pensionContribution"
+                    style="font-size: 10px; cursor: help; color: #888; background: #2a2a2a; border-radius: 50%; width: 14px; height: 14px; display: inline-flex; justify-content: center; align-items: center; border: 1px solid #444;">?</span>
+            </h3>
+
+            <div id="pensionContainer">
+                <div id="pensionContributionTextLabel" style="font-size: 12px; color: #ff69b4; margin-bottom: 10px; font-weight: bold;">
+                    Les cr&eacute;atures en pension contribuent &agrave; vos stats principales !
+                </div>
+                <div class="team-list" id="pensionList"></div>
+            </div>
+
+            <div class="storage-header-row">
+                <h3><span style="cursor: pointer;" data-action="toggleStorage"><span id="storageTitleLabel">Stockage</span> (<span id="storageCount">0</span>) <span id="storageToggleIcon">&#9660;</span></span></h3>
+                <div id="storageContainer" class="storage-container">
+                    <div class="storage-controls-toggle-row">
+                        <button type="button" id="storageControlsToggleBtn" class="sort-btn" data-action="toggleStorageControls">
+                            <span id="storageControlsToggleLabel">Filtres</span> <span id="storageControlsToggleIcon">&#9660;</span>
+                        </button>
+                    </div>
+                    <div id="storageControlsContent">
+                        <div class="storage-controls">
+                            <div style="display: flex; gap: 10px;">
+                                <input type="text" id="storageSearchInput" placeholder="Rechercher par nom..."
+                                    style="flex: 2; padding: 10px; border-radius: 8px; border: 1px solid #ccc;">
+
+                                <select id="storageTypeFilter"
+                                    style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ccc; font-weight: bold; cursor: pointer; background-color: white;">
+                                    <option value="all">Tous les types</option>
+                                    <option value="fire">Feu</option>
+                                    <option value="water">Eau</option>
+                                    <option value="grass">Plante</option>
+                                    <option value="electric">Electrik</option>
+                                    <option value="normal">Normal</option>
+                                    <option value="flying">Vol</option>
+                                    <option value="bug">Insecte</option>
+                                    <option value="poison">Poison</option>
+                                    <option value="ground">Sol</option>
+                                    <option value="rock">Roche</option>
+                                    <option value="fighting">Combat</option>
+                                    <option value="psychic">Psy</option>
+                                    <option value="ghost">Spectre</option>
+                                    <option value="ice">Glace</option>
+                                    <option value="dragon">Dragon</option>
+                                    <option value="steel">Acier</option>
+                                    <option value="dark">T&eacute;n&egrave;bres</option>
+                                    <option value="fairy">F&eacute;e</option>
+                                </select>
+                            </div>
+
+                            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                                <button data-action="sortStorage" data-arg="pokedex" class="sort-btn" id="sort-pokedex">Pok&eacute;dex</button>
+                                <button data-action="sortStorage" data-arg="level" class="sort-btn" id="sort-level">Niveau</button>
+                                <button data-action="sortStorage" data-arg="rarity" class="sort-btn" id="sort-rarity">Raret&eacute;</button>
+                                <button data-action="sortStorage" data-arg="hp" class="sort-btn" id="sort-hp">HP</button>
+                                <button data-action="sortStorage" data-arg="attack" class="sort-btn" id="sort-attack">ATK</button>
+                                <button data-action="sortStorage" data-arg="spattack" class="sort-btn" id="sort-spattack">ATK Sp&eacute;.</button>
+                                <button data-action="sortStorage" data-arg="defense" class="sort-btn" id="sort-defense">DEF</button>
+                                <button data-action="sortStorage" data-arg="spdefense" class="sort-btn" id="sort-spdefense">DEF Sp&eacute;.</button>
+                                <button data-action="sortStorage" data-arg="speed" class="sort-btn" id="sort-speed">VIT</button>
+                                <button data-action="sortStorage" data-arg="total" class="sort-btn" id="sort-total">Total</button>
+                                <button data-action="sortStorage" data-arg="shards" class="sort-btn" id="sort-shards">Shards</button>
+                                <button data-action="sortStorage" data-arg="shiny" class="sort-btn" id="sort-shiny">Shiny</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="team-list" id="storageList"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="secondary-content" id="secondaryContent">
+            <div class="tabs-container" role="tablist" aria-label="Sections extras">
+                <button id="mainTab-boutique" type="button" class="tab-btn active" role="tab" aria-selected="true" aria-controls="boutiqueTab" tabindex="0" data-icon="shop" data-unlock-key="shopTab" data-action="switchTab" data-arg="boutique"><span id="tabShopLabel">Boutique</span></button>
+                <button id="mainTab-sacados" type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="sacadosTab" tabindex="-1" data-icon="bag" data-unlock-key="bagTab" data-action="switchTab" data-arg="sacados"><span id="tabBagLabel">Sac &agrave; dos</span></button>
+                <button id="mainTab-pokedex" type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="pokedexTab" tabindex="-1" data-icon="pokedex" data-action="switchTab" data-arg="pokedex"><span id="tabPokedexLabel">Pok&eacute;dex</span></button>
+                <button id="mainTab-quests" type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="questsTab" tabindex="-1" data-icon="quest" data-action="switchTab" data-arg="quests"><span id="tabQuestsLabel">Qu&ecirc;tes</span><span id="questsTabBadge"></span></button>
+                <button id="mainTab-tower" type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="towerTab" tabindex="-1" data-icon="tower" data-unlock-key="towerTab" data-action="switchTab" data-arg="tower"><span id="tabTowerLabel">Tour de Combat</span></button>
+                <button id="mainTab-expeditions" type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="expeditionsTab" tabindex="-1" data-icon="expedition" data-unlock-key="expeditionsTab" data-action="switchTab" data-arg="expeditions"><span id="tabExpeditionsLabel">Exp&eacute;ditions</span><span
+                        id="expeditionsTabBadge"></span></button>
+                <button id="mainTab-teamrocket" type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="teamrocketTab" tabindex="-1" data-icon="rocket" data-unlock-key="teamRocketTab" data-action="switchTab" data-arg="teamrocket"><span id="tabTeamRocketLabel">Team Rocket</span><span
+                        id="teamRocketTabBadge"></span></button>
+            </div>
+
+            <div class="tab-content active" id="boutiqueTab" role="tabpanel" aria-labelledby="mainTab-boutique">
+                <div class="sub-tabs-container" role="tablist" aria-label="Sous-sections boutique">
+                    <button id="shopSubTab-epicerie" type="button" class="sub-tab-btn" role="tab" aria-selected="false" aria-controls="shop-epicerie" tabindex="-1" data-action="switchShopSubTab" data-arg="epicerie">&#x1F3EA; <span id="shopSubGroceryLabel">&Eacute;picerie</span></button>
+                    <button id="shopSubTab-pokedollars" type="button" class="sub-tab-btn active" role="tab" aria-selected="true" aria-controls="shop-pokedollars" tabindex="0" data-action="switchShopSubTab" data-arg="pokedollars"><span id="shopSubUpgradesLabel">Am&eacute;liorations</span></button>
+                    <button id="shopSubTab-jetons" type="button" class="sub-tab-btn" role="tab" aria-selected="false" aria-controls="shop-jetons" tabindex="-1" data-action="switchShopSubTab" data-arg="jetons"><span id="shopSubTokensLabel">Boutique Jetons</span></button>
+                    <button id="shopSubTab-marques" type="button" class="sub-tab-btn" role="tab" aria-selected="false" aria-controls="shop-marques" tabindex="-1" data-action="switchShopSubTab" data-arg="marques"><span id="shopSubTowerLabel">Boutique Tour</span></button>
+                    <button id="shopSubTab-recycleur" type="button" class="sub-tab-btn" role="tab" aria-selected="false" aria-controls="shop-recycleur" tabindex="-1" data-action="switchShopSubTab" data-arg="recycleur"><span id="shopSubRecyclerLabel">Recycleur</span></button>
+                </div>
+
+                <div class="sub-tab-content" id="shop-epicerie" role="tabpanel" aria-labelledby="shopSubTab-epicerie" hidden>
+                    <h3 id="shopMartTitleLabel">Pok&eacute;Mart</h3>
+                    <div class="shop-wallet">
+                        <span id="shopWalletLabel">Porte-monnaie :</span> <img src="./assets/pokedollars-BdBkFrc7.png" class="resource-inline-icon" alt=""> <span id="martMoney">0</span>
+                    </div>
+                    <div style="text-align: center; margin: 10px 0 12px;">
+                        <div class="quest-timer quest-timer--pill" id="martOfferTimerWrap" role="status" aria-live="polite">
+                            <span id="martOfferTimerLabel"></span>
+                            <strong id="martOfferTimer">—</strong>
+                        </div>
+                    </div>
+                    <div class="shop-container" id="martContainer"></div>
+                </div>
+
+                <div class="sub-tab-content active" id="shop-pokedollars" role="tabpanel" aria-labelledby="shopSubTab-pokedollars">
+                    <h3 id="shopUpgradesTitleLabel">Am&eacute;liorations</h3>
+                    <div class="upgrades-container" id="upgradesContainer"></div>
+                </div>
+
+                <div class="sub-tab-content" id="shop-jetons" role="tabpanel" aria-labelledby="shopSubTab-jetons" hidden>
+                    <h3 id="shopSpecialTitleLabel">Boutique Sp&eacute;ciale</h3>
+                    <div class="shop-wallet">
+                        <img src="https://raw.githubusercontent.com/msikma/pokesprite/master/items/key-item/magma-emblem.png" class="quest-token-inline" alt=""> <span id="shopTokens">0</span> <span id="shopTokensUnitLabel">Jetons</span>
+                    </div>
+                    <div class="shop-container" id="shopContainer"></div>
+                </div>
+
+                <div class="sub-tab-content" id="shop-marques" role="tabpanel" aria-labelledby="shopSubTab-marques" hidden>
+                    <h4 id="shopTowerTitleLabel" style="margin-top: 0;">Boutique de la Tour</h4>
+                    <p id="shopTowerDescLabel" style="color: #666; margin-bottom: 15px;">Utilisez vos Marques du Triomphe pour acheter des am&eacute;liorations uniques.</p>
+                    <div class="shop-container" id="towerShopContainer"></div>
+                </div>
+
+                <div class="sub-tab-content" id="shop-recycleur" role="tabpanel" aria-labelledby="shopSubTab-recycleur" hidden>
+                    <div class="recycler-header recycler-wallet">
+                        <span id="recyclerTotalLabel">Total :</span> <span class="essence-count" id="essenceDustCount">0</span> <img src="./assets/essence-dust-wOdTprEk.png" class="essence-dust-inline" alt=""> <span id="recyclerEssenceLabel">Poussi&egrave;re d'Essence</span>
+                    </div>
+                    <div id="recyclerContent"></div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="sacadosTab" role="tabpanel" aria-labelledby="mainTab-sacados" hidden>
+                <div id="autoCatcherPanel" class="porygon-panel" style="display:none;">
+                    <div class="porygon-header">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span style="font-size:20px;"></span>
+                            <div>
+                                <div id="bagPorygonTitleLabel" style="font-weight:800; letter-spacing:0.5px;">MODULE PORYGON-Z</div>
+                                <div id="bagPorygonDescLabel" style="font-size:10px; color:#c7d2fe;">Syst&egrave;me de capture automatis&eacute; v3.0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="auto-catch-toggles">
+                        <div class="auto-catch-toggle-row">
+                            <span id="bagAutoCatchActiveLabel" style="font-size:11px; font-weight:600;">Actif (cibles)</span>
+                            <div class="auto-catch-toggle-row-actions">
+                                <button type="button" id="ac-master-active" class="auto-catch-master-sprite-btn is-off"
+                                    style="display:none;" aria-label="Autoriser la Master Ball pour les cibles actives ?"
+                                    data-action="toggleAutoCatch" data-arg="masterActive">
+                                    <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/master-ball.png" alt="">
+                                </button>
+                                <button type="button" id="ac-enabled" class="auto-catch-toggle-btn"
+                                    data-action="toggleAutoCatch" data-arg="enabled">OFF</button>
+                            </div>
+                        </div>
+
+                        <div class="auto-catch-toggle-row">
+                            <span id="bagAutoCatchShinyLabel" style="font-size:11px; font-weight:600;">Shiny</span>
+                            <div class="auto-catch-toggle-row-actions">
+                                <button type="button" id="ac-master-shiny" class="auto-catch-master-sprite-btn is-on"
+                                    style="display:none;" aria-label="Autoriser la Master Ball pour les shiny ?"
+                                    data-action="toggleAutoCatch" data-arg="masterShiny">
+                                    <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/master-ball.png" alt="">
+                                </button>
+                                <button type="button" id="ac-shiny" class="auto-catch-toggle-btn"
+                                    data-action="toggleAutoCatch" data-arg="shiny">OFF</button>
+                            </div>
+                        </div>
+                        <div class="auto-catch-toggle-row">
+                            <span id="bagAutoCatchRoamerLabel" style="font-size:11px; font-weight:600;">Roamer</span>
+                            <div class="auto-catch-toggle-row-actions">
+                                <button type="button" id="ac-master-roamer" class="auto-catch-master-sprite-btn is-on"
+                                    style="display:none;" aria-label="Autoriser la Master Ball pour les roamers ?"
+                                    data-action="toggleAutoCatch" data-arg="masterRoamer">
+                                    <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/master-ball.png" alt="">
+                                </button>
+                                <button type="button" id="ac-roamer" class="auto-catch-toggle-btn"
+                                    data-action="toggleAutoCatch" data-arg="roamer">OFF</button>
+                            </div>
+                        </div>
+                        <div class="auto-catch-toggle-row">
+                            <span id="bagAutoCatchLegendaryLabel" style="font-size:11px; font-weight:600;">Légendaire farmable</span>
+                            <div class="auto-catch-toggle-row-actions">
+                                <button type="button" id="ac-master-legendary" class="auto-catch-master-sprite-btn is-off"
+                                    style="display:none;" aria-label="Autoriser la Master Ball pour les légendaires farmables ?"
+                                    data-action="toggleAutoCatch" data-arg="masterLegendary">
+                                    <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/master-ball.png" alt="">
+                                </button>
+                                <button type="button" id="ac-legendary" class="auto-catch-toggle-btn"
+                                    data-action="toggleAutoCatch" data-arg="legendary">OFF</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="ac-ball-controls" class="auto-catch-ball-controls" style="display:none;">
+                        <div class="auto-catch-toggle-row auto-catch-control-row auto-catch-control-row--with-help">
+                            <button type="button" id="bagAutoCatchHelpTrigger" class="auto-catch-help-trigger" aria-label="">?</button>
+                            <label id="bagAutoCatchMinChanceLabel" for="ac-min-chance" class="auto-catch-control-label">Chance minimale</label>
+                            <div class="auto-catch-threshold-field">
+                                <input type="number" id="ac-min-chance" class="auto-catch-number"
+                                    min="0" max="100" step="1" data-action-on-change="setAutoCatchMinChance">
+                                <span class="auto-catch-threshold-unit">%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <h3 class="incubator-title-row">
+                    <span id="bagIncubatorsTitleLabel">Incubateurs</span>
+                    <span id="incubatorBoostInlineIndicator" class="incubator-boost-inline-indicator"></span>
+                </h3>
+                <div class="incubators-container" id="incubatorsContainer"></div>
+                <hr style="margin: 20px 0;">
+
+                <h3><span id="bagEggInventoryTitleLabel">Inventaire d'oeufs</span> (<span id="ballCount">0</span>)</h3>
+                <div class="balls-container" id="ballsContainer"></div>
+                <hr style="margin: 20px 0;">
+                <div id="activeStatBoosts"></div>
+                <div id="itemsContainer"></div>
+            </div>
+
+            <div class="tab-content" id="pokedexTab" role="tabpanel" aria-labelledby="mainTab-pokedex" hidden>
+                <div class="sub-tabs-container" role="tablist" aria-label="Sous-sections Pokedex">
+                    <button id="pokedexSubTab-pokedex" type="button" class="sub-tab-btn active" role="tab" aria-selected="true" aria-controls="pokedexSubView-pokedex" tabindex="0" data-action="switchPokedexSubTab" data-arg="pokedex"><span id="pokedexSubTabMainLabel">Pok&eacute;dex</span></button>
+                    <button id="pokedexSubTab-collectionbonuses" type="button" class="sub-tab-btn" role="tab" aria-selected="false" aria-controls="pokedexSubView-collectionbonuses" tabindex="-1" data-action="switchPokedexSubTab" data-arg="collectionbonuses"><span id="pokedexSubTabBonusLabel">Bonus collection</span></button>
+                </div>
+
+                <div id="pokedexSubView-pokedex" role="tabpanel" aria-labelledby="pokedexSubTab-pokedex">
+                    <h3><span id="pokedexTitleLabel">Pok&eacute;dex</span> (<span id="pokedexCount">0</span>/<span id="pokedexTotal">0</span> <span id="pokedexDiscoveredLabel">d&eacute;couverts</span>)</h3>
+                    <div class="pokedex-controls">
+                        <button data-action="sortPokedex" data-arg="id" class="sort-btn" id="sort-pokedex-id"><span id="pokedexSortNumberLabel">Num&eacute;ro</span></button>
+                        <button data-action="sortPokedex" data-arg="name" class="sort-btn" id="sort-pokedex-name"><span id="pokedexSortNameLabel">Nom</span></button>
+                        <button data-action="sortPokedex" data-arg="rarity" class="sort-btn" id="sort-pokedex-rarity"><span id="pokedexSortRarityLabel">Raret&eacute;</span></button>
+                        <button data-action="sortPokedex" data-arg="count" class="sort-btn active" id="sort-pokedex-count"><span id="pokedexSortOwnedLabel">Obtenus</span></button>
+                        <button data-action="sortPokedex" data-arg="type" class="sort-btn" id="sort-pokedex-type"><span id="pokedexSortTypeLabel">Type</span></button>
+                    </div>
+                    <div class="team-list" id="pokedexList"></div>
+                </div>
+
+                <div id="pokedexSubView-collectionbonuses" role="tabpanel" aria-labelledby="pokedexSubTab-collectionbonuses" style="display:none;" hidden>
+                    <h3 id="collectionBonusTitleLabel">Bonus de collection</h3>
+                    <p id="collectionBonusHintLabel" style="font-size: 12px; color: #666; margin-bottom: 10px;">Bonus &laquo; Maillon Faible &raquo; : &eacute;volution finale requise. Niveau de collection = min. prestige des membres (plafond 9). Manquant ou prestige 0 = bonus 0.</p>
+                    <div id="collectionBonusesTabsToolbar" class="collection-bonus-tabs-toolbar"></div>
+                    <div id="collectionBonusesTabs" class="collection-bonus-tabs"></div>
+                    <div id="collectionBonusesContainer"></div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="questsTab" role="tabpanel" aria-labelledby="mainTab-quests" hidden>
+                <div class="sub-tabs-container" role="tablist" aria-label="Sous-sections quêtes">
+                    <button id="questsSubTab-quetes" type="button" class="sub-tab-btn active" role="tab" aria-selected="true" aria-controls="questsSubView-quetes" tabindex="0" data-action="switchQuestsSubTab" data-arg="quetes"><span id="questsSubTabQuestesLabel">Qu&ecirc;tes</span></button>
+                    <button id="questsSubTab-succes" type="button" class="sub-tab-btn" role="tab" aria-selected="false" aria-controls="questsSubView-succes" tabindex="-1" data-action="switchQuestsSubTab" data-arg="succes"><span id="questsSubTabSuccesLabel">Succ&egrave;s</span><span id="achievementsSubTabBadge"></span></button>
+                </div>
+
+                <div class="sub-tab-content active" id="questsSubView-quetes">
+                    <div data-unlock-key="classicQuests" style="display: none;">
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; margin-top: 20px;">
+                            <h3><span id="dailyQuestsTitleLabel">Qu&ecirc;tes du Jour</span> (<span id="questCount">0</span>/10)</h3>
+                            <div class="quest-timer quest-timer--pill" id="questTimer"
+                                role="status" aria-live="polite">
+                                <span id="nextQuestLabel">Prochaine :</span> <strong id="nextQuestTime">--:--</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="quest-container" id="questContainer">
+                    </div>
+                </div>
+
+                <div class="sub-tab-content" id="questsSubView-succes">
+                    <h3 style="margin-top: 20px; margin-bottom: 12px;">
+                        <span id="achievementsTitleLabel">Succ&egrave;s Permanents</span> (<span id="achievementsCount">0</span>/<span id="achievementsTotal">0</span>)
+                    </h3>
+                    <div class="quest-container" id="achievementsContainer">
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="towerTab" role="tabpanel" aria-labelledby="mainTab-tower" hidden>
+                <h3 id="towerTitleLabel">Tour de Combat</h3>
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <div class="tower-stats">
+                        <div><span id="towerRecordLabel">Record Personnel : Etage</span> <strong id="towerRecord">0</strong></div>
+                        <div><img src="https://raw.githubusercontent.com/msikma/pokesprite/master/items/key-item/crown-pass.png" class="combat-ticket-inline" alt="" loading="lazy" decoding="async" fetchpriority="low"> <span id="towerTicketsLabel">Tickets de Combat :</span> <strong id="combatTickets">0</strong></div>
+                        <div><img src="https://raw.githubusercontent.com/msikma/pokesprite/master/items/valuable-item/relic-crown.png" class="marque-triomphe-inline" alt="" loading="lazy" decoding="async" fetchpriority="low"> <span id="towerMarksLabel">Marques du Triomphe :</span> <strong
+                                id="triumphMarks">0</strong></div>
+                    </div>
+                    <button id="towerStartBtn" class="btn btn-save" data-action="startTowerRun" disabled><span id="towerStartLabel">Lancer l'ascension - 1 <img src="https://raw.githubusercontent.com/msikma/pokesprite/master/items/key-item/crown-pass.png" class="combat-ticket-inline" alt="" loading="lazy" decoding="async" fetchpriority="low"> requis</span></button>
+                    <div id="towerRelicAutoPanel" class="tower-relic-auto-panel" style="display: none;" aria-live="polite"></div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="expeditionsTab" role="tabpanel" aria-labelledby="mainTab-expeditions" hidden>
+                <div style="display: flex; justify-content: flex-end; align-items: center; margin-bottom: 15px;">
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <button class="zone-details-btn" style="background: #8b5cf6; font-size:12px; padding:5px 10px;"
+                            data-action="showMasteryModal">
+                            <span id="expeditionsMasteryLabel">Maitrises</span>
+                        </button>
+
+                        <span class="expedition-slots" style="font-size: 12px; padding: 5px 10px; border-radius: 15px;">
+                            <span id="expeditionsSlotsLabel">Slots :</span> <strong id="expeditionSlots">1/1</strong>
+                        </span>
+                    </div>
+                </div>
+
+                <h4 id="expeditionsAvailableLabel" style="color: #666; margin-bottom: 10px;">Missions Disponibles</h4>
+                <div class="quest-container" id="availableExpeditionsList">
+                </div>
+
+                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+
+                <h4 id="expeditionsRunningLabel" style="color: #666; margin-bottom: 10px;">En cours</h4>
+                <div class="quest-container" id="activeExpeditionsContainer">
+                    <p id="expeditionsNoneLabel" style="color: #666;">Aucune exp&eacute;dition en cours...</p>
+                </div>
+            </div>
+
+            <div class="tab-content" id="arenasTab" hidden>
+                <h3 id="arenasTitleLabel">Ar&egrave;nes de Combat</h3>
+                <div class="arena-subtabs" role="tablist" aria-label="Sous-sections arenes">
+                    <button id="arenaSubTab-gyms" type="button" class="arena-subtab-btn active" role="tab" aria-selected="true" aria-controls="arenaGymsPanel" tabindex="0" data-arena-subtab="gyms" data-action="switchArenaSubtab" data-arg="gyms"><span id="arenasSubGymsLabel">Ar&egrave;nes</span></button>
+                    <button id="arenaSubTab-elite4" type="button" class="arena-subtab-btn" role="tab" aria-selected="false" aria-controls="arenaElite4Panel" tabindex="-1" data-arena-subtab="elite4" data-action="switchArenaSubtab" data-arg="elite4"><span id="arenasSubEliteLabel">Conseil des 4</span></button>
+                </div>
+                <div class="account-talents-box">
+                    <h4 id="arenasTalentsTitleLabel">Talents de Compte D&eacute;bloqu&eacute;s</h4>
+                    <div id="badgesList">
+                    </div>
+                </div>
+                <div id="arenaSubtabPanels">
+                    <div class="arena-subtab-panel active" id="arenaGymsPanel" role="tabpanel" aria-labelledby="arenaSubTab-gyms">
+                        <div class="upgrades-container" id="arenasContainer"></div>
+                    </div>
+                    <div class="arena-subtab-panel" id="arenaElite4Panel" role="tabpanel" aria-labelledby="arenaSubTab-elite4" hidden>
+                        <div id="eliteFourContainer"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="teamrocketTab" role="tabpanel" aria-labelledby="mainTab-teamrocket" hidden>
+                <h3 id="teamRocketTitleLabel">Onglet Team Rocket</h3>
+                <p id="teamRocketIntroLabel" class="tr-text-intro">
+                    Banque &agrave; int&eacute;r&ecirc;ts, Pr&ecirc;t, Staking Push Your Luck et Casino Rocket autour des Jetons Rocket (RJ).
+                </p>
+                <div id="teamRocketPanel"></div>
+            </div>
+
+        </div> <!-- ? FERMETURE DE secondaryContent -->
+
+        <!-- ? BOUTON EXTRAS (EN DEHORS DE secondaryContent) -->
+        <button
+            style="position: fixed; bottom: 20px; right: 20px; padding: 15px 25px; background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; border-radius: 50px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.3); z-index: 100;"
+            data-action="toggleSecondaryContent">
+            <span id="toggleIcon">?<span id="extrasBadge"></span></span> <span id="extrasToggleLabel">Extras</span>
+        </button>
+
+            </div> <!-- ? FERMETURE DE game-container -->
+        </div> <!-- game-scale-surface -->
+    </div> <!-- game-viewport -->
+
+    <!-- Navigation mobile : enfant direct de body pour position:fixed fiable (hors game-container / transform) -->
+    <nav class="mobile-nav" id="mobileNav" aria-label="Navigation principale mobile">
+        <button class="mobile-nav-btn active" data-panel="combat" data-action="switchMobilePanel" data-arg="combat" aria-label="Combat" aria-current="page">
+            <span id="mobileNavCombatLabel" class="mobile-nav-label">Combat</span>
+        </button>
+        <button class="mobile-nav-btn" data-panel="team" data-action="switchMobilePanel" data-arg="team" aria-label="Equipe">
+            <span id="mobileNavTeamLabel" class="mobile-nav-label">Equipe</span>
+        </button>
+        <button class="mobile-nav-btn" data-panel="extras" data-action="switchMobilePanel" data-arg="extras" aria-label="Extras">
+            <span id="mobileNavExtrasLabel" class="mobile-nav-label">Extras</span>
+        </button>
+    </nav>
+
+    <!-- Modals : même contenu que modals.html, embarqué pour file:// -->
+    <!-- Modal de concept du jeu (avant le choix du starter) -->
+    <div class="stats-modal game-concept-modal js-modal-overlay" id="gameConceptModal" role="dialog" aria-modal="true" aria-labelledby="conceptTitleLabel"
+        style="background: rgba(0,0,0,0.92); z-index: 19999;" data-action="closeConceptModal">
+        <div class="stats-content" style="max-width: 520px; text-align: center;" data-action="stopPropagation" data-action-stop>
+            <h1 id="conceptTitleLabel" style="color: #f59e0b; margin-bottom: 16px; font-size: 26px;"> Bienvenue jeune dresseur </h1>
+            <p id="conceptLeadLabel" style="color: #e2e8f0; line-height: 1.6; margin-bottom: 16px; font-size: 15px;">Vous allez
+                <strong>combattre</strong> des Pokémon sauvages en zone, les <strong>capturer</strong> avec des Poké
+                Balls, et faire <strong>évoluer</strong> votre équipe. Les quêtes scénario vous guideront pas à pas.
+            </p>
+            <p id="conceptHelpLabel" style="color: #94a3b8; line-height: 1.5; margin-bottom: 24px; font-size: 14px;">En haut : <strong>Zone de
+                    combat</strong> (choisir la zone). Au centre : <strong>combat</strong> puis proposition de
+                <strong>capture</strong> apres une victoire. Onglets : <strong>Equipe</strong>, <strong>Quetes</strong>,
+                <strong>Extras</strong> (boutiques, ?ufs, etc.).
+            </p>
+            <button class="btn" data-action="closeConceptModal"
+                style="background: linear-gradient(135deg, #f59e0b, #d97706); color: white; padding: 14px 28px; font-size: 16px; font-weight: bold; border-radius: 10px;"><span id="conceptChooseStarterLabel">Choisir
+                mon starter</span></button>
+        </div>
+    </div>
+    <div class="quest-completion-modal js-modal-overlay" id="towerCompletionModal" role="dialog" aria-modal="true" aria-label="Fin de l'ascension"
+        data-action="closeTowerCompletion">
+        <div class="quest-completion-content farming-metrics-modal-content" data-action="stopPropagation" data-action-stop>
+            <button id="closeTowerBtn" class="stats-close" type="button" title="Fermer" data-action="closeTowerCompletion">&times;</button>
+            <div class="quest-completion-rewards farming-metrics-body" id="towerCompletionRewards"></div>
+        </div>
+    </div>
+    <div class="quest-completion-modal js-modal-overlay" id="eliteFourVictoryModal" role="dialog" aria-modal="true" aria-labelledby="eliteVictoryTitleLabel" data-action="closeEliteFourVictoryModal">
+        <div class="quest-completion-content elite-four-victory-content" data-action="stopPropagation" data-action-stop>
+            <button id="eliteVictoryCloseBtn" type="button" class="stats-close" title="Fermer" data-action="closeEliteFourVictoryModal">&times;</button>
+            <div class="elite-four-victory-title" id="eliteVictoryTitleLabel">Maitre de la Ligue</div>
+            <div class="elite-four-victory-subtitle" id="eliteVictorySubtitleLabel">Vous avez vaincu la Ligue !</div>
+            <div class="elite-four-victory-team-label" id="eliteVictoryTeamLabel">Equipe victorieuse</div>
+            <div class="elite-four-victory-team" id="eliteFourVictoryTeamGrid"></div>
+            <div class="elite-four-victory-badge" id="eliteVictoryBadgeLabel">Titre obtenu</div>
+            <button type="button" class="btn elite-four-victory-btn" data-action="closeEliteFourVictoryModal"><span id="eliteVictoryButtonLabel">C'est parti !</span></button>
+        </div>
+    </div>
+    <div id="statsModal" class="stats-modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="statsModalTitleLabel" data-action="closeStatsModal">
+        <div class="stats-content js-modal-content farming-metrics-modal-content" data-action="stopPropagation" data-action-stop style="max-width: 520px;">
+            <div class="stats-header">
+                <h2 id="statsModalTitleLabel">Statistiques</h2>
+                <button class="stats-close" data-action="closeStatsModal">&#10005;</button>
+            </div>
+            <div class="farming-metrics-body">
+                <div class="dps-meter-tabs" id="statsModalTabs" role="tablist">
+                    <button type="button" class="dps-meter-tab" data-action="setStatsTab" data-arg="combat" role="tab" data-stats-tab="combat"><span data-stats-tab-label="combat">Combat</span></button>
+                    <button type="button" class="dps-meter-tab" data-action="setStatsTab" data-arg="creatures" role="tab" data-stats-tab="creatures"><span data-stats-tab-label="creatures">Creatures</span></button>
+                    <button type="button" class="dps-meter-tab" data-action="setStatsTab" data-arg="economy" role="tab" data-stats-tab="economy"><span data-stats-tab-label="economy">Economie</span></button>
+                    <button type="button" class="dps-meter-tab" data-action="setStatsTab" data-arg="records" role="tab" data-stats-tab="records"><span data-stats-tab-label="records">Records</span></button>
+                    <button type="button" class="dps-meter-tab" data-action="setStatsTab" data-arg="tower" role="tab" data-stats-tab="tower"><span data-stats-tab-label="tower">Tour</span></button>
+                    <button type="button" class="dps-meter-tab" data-action="setStatsTab" data-arg="quests" role="tab" data-stats-tab="quests"><span data-stats-tab-label="quests">Quetes</span></button>
+                    <button type="button" class="dps-meter-tab" data-action="setStatsTab" data-arg="growth" role="tab" data-stats-tab="growth"><span data-stats-tab-label="growth">Croissance</span></button>
+                </div>
+                <div id="statsDisplay"></div>
+            </div>
+        </div>
+    </div>
+    <div id="farmingMetricsModal" class="stats-modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="farmingMetricsModalTitle" data-action="closeFarmingMetricsOverlay">
+        <div class="stats-content js-modal-content farming-metrics-modal-content" data-action="stopPropagation" data-action-stop style="max-width: 420px;">
+            <div class="stats-header">
+                <h2 id="farmingMetricsModalTitle">&#128200; Métriques de farm</h2>
+                <button type="button" class="stats-close js-close-modal" data-action="closeFarmingMetricsModal">&#10005;</button>
+            </div>
+            <div class="farming-metrics-body">
+                <div class="farming-metrics-toggle-row">
+                    <span class="farming-metrics-label" id="farmingMetricsRecordingLabel">Enregistrement</span>
+                    <button type="button" id="farmingMetricsRecordingBtn" class="farming-metrics-toggle-btn" data-action="toggleFarmingMetricsRecording"><span id="farmingMetricsRecordingText">Désactivé</span></button>
+                </div>
+                <div class="farming-metrics-actions">
+                    <button type="button" id="farmingMetricsResetBtn" class="farming-metrics-reset-btn" data-action="resetFarmingMetricsAndRefresh"><span id="farmingMetricsResetLabel">Réinitialiser la session</span></button>
+                </div>
+                <div class="farming-metrics-period" id="farmingMetricsPeriodText"></div>
+                <div class="farming-metrics-grid" id="farmingMetricsGrid"></div>
+                <div class="farming-metrics-section" id="farmingMetricsAvgSection" style="display:none;">
+                    <div class="farming-metrics-section-title" id="farmingMetricsAvgTitle">Combat moyen</div>
+                    <div class="farming-metrics-grid" id="farmingMetricsAvgGrid"></div>
+                </div>
+                <div class="farming-metrics-section" id="farmingMetricsDryStreakSection" style="display:none;">
+                    <div class="farming-metrics-section-title" id="farmingMetricsDryStreakTitle">Dry streak shiny</div>
+                    <div class="farming-metrics-grid" id="farmingMetricsDryStreakGrid"></div>
+                </div>
+                <div class="farming-metrics-section" id="farmingMetricsRevenueSection" style="display:none;">
+                    <div class="farming-metrics-section-title" id="farmingMetricsRevenueTitle">Sources de revenu</div>
+                    <div class="farming-metrics-donut-row">
+                        <div class="farming-metrics-donut-svg" id="farmingMetricsDonutSvg"></div>
+                        <div class="farming-metrics-donut-legend" id="farmingMetricsDonutLegend"></div>
+                    </div>
+                </div>
+                <div class="farming-metrics-section" id="farmingMetricsTopItemsSection" style="display:none;">
+                    <div class="farming-metrics-section-title" id="farmingMetricsTopItemsTitle">Top objets récoltés</div>
+                    <div class="farming-metrics-top-items" id="farmingMetricsTopItems"></div>
+                </div>
+                <div class="farming-metrics-section" id="farmingMetricsTimelineSection" style="display:none;">
+                    <div class="farming-metrics-section-title" id="farmingMetricsTimelineTitle">Historique des gains</div>
+                    <div class="farming-metrics-timeline" id="farmingMetricsTimelineSparkline"></div>
+                </div>
+                <div class="farming-metrics-item-select-row">
+                    <label for="farmingMetricsItemSelect" class="farming-metrics-label" id="farmingMetricsItemSelectLabel">Objet à suivre</label>
+                    <select id="farmingMetricsItemSelect" class="farming-metrics-item-select"></select>
+                </div>
+                <div class="farming-metrics-estimation-mode-row">
+                    <span class="farming-metrics-label" id="farmingMetricsEstimationModeLabel">Mode estimation</span>
+                    <div class="farming-metrics-estimation-mode-tabs">
+                        <button type="button" id="farmingMetricsEstimationModeForward" class="farming-metrics-mode-tab active" data-action="setFarmingEstimationMode" data-arg="forward">Durée → gain</button>
+                        <button type="button" id="farmingMetricsEstimationModeGoal" class="farming-metrics-mode-tab" data-action="setFarmingEstimationMode" data-arg="goal">Objectif → durée</button>
+                    </div>
+                </div>
+                <div class="farming-metrics-estimation-row" id="farmingMetricsEstimationRow">
+                    <label class="farming-metrics-label" id="farmingMetricsEstimationLabel">Estimation</label>
+                    <select id="farmingMetricsEstimationSelect" class="farming-metrics-item-select"></select>
+                    <div class="farming-metrics-estimation-tooltip" id="farmingMetricsEstimationTooltip" role="tooltip"></div>
+                </div>
+                <div class="farming-metrics-estimation-row" id="farmingMetricsGoalRow" style="display:none;">
+                    <label class="farming-metrics-label" id="farmingMetricsGoalLabel">Objectif</label>
+                    <select id="farmingMetricsGoalMetricSelect" class="farming-metrics-item-select" data-action="setFarmingGoalMetric"></select>
+                    <input type="number" id="farmingMetricsGoalAmountInput" class="farming-metrics-goal-input" min="1" step="1000" data-action-on-change="setFarmingGoalAmount">
+                    <div class="farming-metrics-goal-result" id="farmingMetricsGoalResult"></div>
+                </div>
+                <div class="farming-metrics-section" id="farmingMetricsSessionsSection">
+                    <div class="farming-metrics-section-title" id="farmingMetricsSessionsTitle">Sessions sauvegardées</div>
+                    <div class="farming-metrics-sessions-actions">
+                        <input type="text" id="farmingMetricsSessionNameInput" class="farming-metrics-session-name-input" placeholder="Nom de la session" maxlength="40">
+                        <button type="button" id="farmingMetricsSaveSessionBtn" class="farming-metrics-save-session-btn" data-action="saveFarmingSessionFromInput">Sauvegarder</button>
+                    </div>
+                    <div class="farming-metrics-sessions-list" id="farmingMetricsSessionsList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="martAutoPurchaseModal" class="stats-modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="martAutoPurchaseModalTitle" data-action="closeMartAutoPurchaseOverlay">
+        <div class="stats-content js-modal-content mart-auto-purchase-modal-content" data-action="stopPropagation" data-action-stop style="max-width: 560px;">
+            <div class="stats-header">
+                <h2 id="martAutoPurchaseModalTitle">Auto-Achat</h2>
+                <button type="button" class="stats-close js-close-modal" data-action="closeMartAutoPurchaseModal">&#10005;</button>
+            </div>
+            <div class="mart-auto-purchase-body"></div>
+        </div>
+    </div>
+    <div id="dpsMeterModal" class="stats-modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dpsMeterModalTitle" data-action="closeDpsMeterOverlay">
+        <div class="stats-content js-modal-content farming-metrics-modal-content" data-action="stopPropagation" data-action-stop style="max-width: 460px;">
+            <div class="stats-header">
+                <h2 id="dpsMeterModalTitle">&#9876;&#65039; Compteur de dégâts</h2>
+                <button type="button" class="stats-close js-close-modal" data-action="closeDpsMeterModal">&#10005;</button>
+            </div>
+            <div class="farming-metrics-body">
+                <div class="dps-meter-tabs" id="dpsMeterTabs" role="tablist">
+                    <button type="button" class="dps-meter-tab active" data-action="setDpsMeterTab" data-arg="done" role="tab">&#x2694;&#xFE0F; Dégâts</button>
+                    <button type="button" class="dps-meter-tab" data-action="setDpsMeterTab" data-arg="taken" role="tab">&#x1F6E1;&#xFE0F; Subis</button>
+                    <button type="button" class="dps-meter-tab" data-action="setDpsMeterTab" data-arg="heal" role="tab">&#x1F49A; Soins</button>
+                </div>
+                <div class="dps-meter-toolbar">
+                    <label class="dps-meter-toolbar-field">
+                        <span class="dps-meter-toolbar-label">Contexte</span>
+                        <select id="dpsMeterContextSelect" class="dps-meter-select" data-action="setDpsMeterContext"></select>
+                    </label>
+                    <label class="dps-meter-toolbar-field">
+                        <span class="dps-meter-toolbar-label">Tri</span>
+                        <select id="dpsMeterSortSelect" class="dps-meter-select" data-action="setDpsMeterSort"></select>
+                    </label>
+                    <button type="button" id="dpsMeterCompactBtn" class="dps-meter-toolbar-btn" data-action="toggleDpsMeterCompact">Compact</button>
+                    <button type="button" id="dpsLiveOverlayToggleBtn" class="dps-meter-toolbar-icon-btn" data-action="toggleDpsLiveOverlay" aria-pressed="true" title="Afficher/masquer le mini-overlay DPS en combat">
+                        <span class="dps-overlay-toggle-icon" aria-hidden="true">&#128065;</span>
+                    </button>
+                </div>
+                <div class="farming-metrics-actions">
+                    <button type="button" id="dpsMeterResetBtn" class="farming-metrics-reset-btn" data-action="resetDpsMeterAndRefresh"><span id="dpsMeterResetLabel">Réinitialiser la session</span></button>
+                </div>
+                <div class="farming-metrics-period" id="dpsMeterPeriodText"></div>
+                <div class="farming-metrics-grid" id="dpsMeterSummaryGrid"></div>
+                <div id="dpsMeterSparkline" class="dps-meter-sparkline-container"></div>
+                <div class="dps-meter-empty" id="dpsMeterEmpty" style="display:none;"></div>
+                <div class="dps-meter-attackers" id="dpsMeterGrid"></div>
+            </div>
+        </div>
+    </div>
+    <div id="bonusModal" class="stats-modal js-modal-overlay bonus-modal" role="dialog" aria-modal="true" aria-labelledby="bonusModalTitleLabel" data-action="closeBonusModal">
+        <div class="stats-content js-modal-content farming-metrics-modal-content bonus-modal-shell" data-action="stopPropagation" data-action-stop>
+            <div class="stats-header">
+                <h2 id="bonusModalTitleLabel">Bonus</h2>
+                <button class="stats-close" data-action="closeBonusModal">&#10005;</button>
+            </div>
+            <div class="farming-metrics-body">
+                <div class="dps-meter-tabs" id="bonusModalTabs" role="tablist" aria-label="Bonus">
+                    <button type="button" class="dps-meter-tab" id="bonusTab-combat" data-action="setBonusTab" data-arg="combat" role="tab" data-bonus-tab="combat" aria-controls="bonusDisplay" aria-selected="true"><span data-bonus-tab-label="combat">Combat</span></button>
+                    <button type="button" class="dps-meter-tab" id="bonusTab-economy" data-action="setBonusTab" data-arg="economy" role="tab" data-bonus-tab="economy" aria-controls="bonusDisplay" aria-selected="false" tabindex="-1"><span data-bonus-tab-label="economy">Economie</span></button>
+                    <button type="button" class="dps-meter-tab" id="bonusTab-support" data-action="setBonusTab" data-arg="support" role="tab" data-bonus-tab="support" aria-controls="bonusDisplay" aria-selected="false" tabindex="-1"><span data-bonus-tab-label="support">Soutien</span></button>
+                    <button type="button" class="dps-meter-tab" id="bonusTab-meta" data-action="setBonusTab" data-arg="meta" role="tab" data-bonus-tab="meta" aria-controls="bonusDisplay" aria-selected="false" tabindex="-1"><span data-bonus-tab-label="meta">Meta</span></button>
+                </div>
+                <div class="farming-metrics-actions">
+                    <button type="button" id="bonusShowAllBtn" class="farming-metrics-reset-btn" data-action="toggleBonusShowAll"><span id="bonusShowAllLabel">Actifs uniquement</span></button>
+                </div>
+                <div id="bonusDisplay" role="tabpanel" aria-labelledby="bonusTab-combat"></div>
+            </div>
+        </div>
+    </div>
+    <div id="dailyLoginModal" class="stats-modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dailyLoginTitleLabel" data-action="closeDailyLoginOverlay"></div>
+    <div id="profChenWikiModal" class="stats-modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="profChenWikiTitleLabel" data-action="closeProfChenWikiOverlay"></div>
+    <div id="masteryModal" class="stats-modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="masteryTitleLabel" data-action="closeMasteryModal">
+        <div class="stats-content" data-action="stopPropagation" data-action-stop style="max-width: 780px;">
+            <div class="stats-header" style="border-bottom-color: #f59e0b;">
+                <h2 id="masteryTitleLabel" style="color: #f59e0b;">Amelioration du Joueur</h2>
+                <button class="stats-close" data-action="closeMasteryModal">&#10005;</button>
+            </div>
+            <div id="masteryDisplay"></div>
+        </div>
+    </div>
+    <div id="academyCoursesModal" class="stats-modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="academyCoursesTitleLabel" data-action="closeAcademyCoursesModal">
+        <div class="stats-content" data-action="stopPropagation" data-action-stop style="max-width: 900px;">
+            <div class="stats-header" style="border-bottom-color: #60a5fa;">
+                <h2 id="academyCoursesTitleLabel" style="color: #60a5fa;">Cours de l'Académie</h2>
+                <button class="stats-close" data-action="closeAcademyCoursesModal">&#10005;</button>
+            </div>
+            <div id="academyCoursesMount"></div>
+        </div>
+    </div>
+    <div id="toastContainer" class="toastContainer"></div>
+    <div id="toastContainerLeft" class="toastContainer toastContainerLeft"></div>
+    <div class="stats-modal js-modal-overlay" id="eggHatchModal" role="dialog" aria-modal="true" aria-label="Eclosion d'oeuf" data-action="closeEggHatchModal">
+        <div class="stats-content" id="eggHatchContent" data-action="stopPropagation" data-action-stop></div>
+    </div>
+    <div class="quest-completion-modal js-modal-overlay" id="evolutionModal" role="dialog" aria-modal="true" aria-label="Evolution Pokemon" data-action="closeEvolutionModal"></div>
+    <div class="quest-completion-modal js-modal-overlay" id="rocketShadowRewardModal" role="dialog" aria-modal="true" aria-label="Recompense Pokemon Ombre" data-action="closeRocketShadowRewardModal">
+        <div class="quest-completion-content" id="rocketShadowRewardContent" data-action="stopPropagation" data-action-stop></div>
+    </div>
+    <div class="quest-completion-modal js-modal-overlay" id="collectionBonusModal" role="dialog" aria-modal="true" aria-label="Bonus de collection" data-action="closeCollectionBonusModal">
+        <div class="quest-completion-content" id="collectionBonusContent" data-action="stopPropagation" data-action-stop></div>
+    </div>
+    <div class="quest-completion-modal js-modal-overlay" id="chooseEggModal" role="dialog" aria-modal="true" aria-labelledby="chooseEggTitleLabel" data-action="closeChooseEggModal">
+        <div class="quest-completion-content" id="chooseEggContent" data-action="stopPropagation" data-action-stop>
+            <div class="choose-egg-modal-title">
+                <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/lucky-egg.png" alt=""
+                    class="egg-icon" loading="lazy" decoding="async" fetchpriority="low">
+                <span id="chooseEggTitleLabel">Choisir un &oelig;uf</span>
+            </div>
+            <p class="choose-egg-modal-subtitle" id="chooseEggSubtitleLabel">S&eacute;lectionnez la raret&eacute; de l'&oelig;uf &agrave; placer dans cet incubateur.</p>
+            <div id="chooseEggOptions" class="choose-egg-options"></div>
+            <button type="button" class="choose-egg-cancel" data-action="closeChooseEggModal"><span id="chooseEggCancelLabel">Annuler</span></button>
+        </div>
+    </div>
+    <div class="stats-modal js-modal-overlay" id="creatureModal" role="dialog" aria-modal="true" aria-label="Details de la creature" data-action="closeCreatureModal">
+        <div class="stats-content" id="creatureModalContent" data-action="stopPropagation" data-action-stop></div>
+    </div>
+    <div class="stats-modal js-modal-overlay" id="zoneTierModal" role="dialog" aria-modal="true" aria-labelledby="zoneTierModalTitle" data-action="closeZoneTierModal">
+        <div class="stats-content" id="zoneTierModalContent" data-action="stopPropagation" data-action-stop>
+            <div class="stats-header">
+                <h2 id="zoneTierModalTitle">Progression de la Zone</h2>
+                <button class="stats-close" data-action="closeZoneTierModal">&#10005;</button>
+            </div>
+            <div class="team-list" id="zoneTierModalGrid"></div>
+        </div>
+    </div>
+    <div class="stats-modal zone-map-modal js-modal-overlay" id="zoneMapModal" role="dialog" aria-modal="true" aria-labelledby="zoneMapTitleLabel" data-action="closeZoneMapOverlay">
+    </div>
+    <div class="stats-modal js-modal-overlay" id="miltankFarmModal" role="dialog" aria-modal="true" aria-labelledby="miltankFarmTitleLabel" data-action="closeMiltankFarmOverlay">
+    </div>
+    <div class="stats-modal js-modal-overlay" id="berryTreeModal" role="dialog" aria-modal="true" aria-labelledby="berryTreeTitleLabel" data-action="closeBerryTreeOverlay">
+    </div>
+    <div class="stats-modal js-modal-overlay" id="pokePelagoModal" role="dialog" aria-modal="true" aria-labelledby="pokePelagoTitleLabel" data-action="closePokePelagoOverlay">
+    </div>
+    <div class="stats-modal js-modal-overlay" id="ultimateSlotModal" role="dialog" aria-modal="true" aria-labelledby="ultimateSlotTitleLabel" data-action="closeUltimateSlotOverlay">
+    </div>
+    <div class="stats-modal js-modal-overlay" id="synergyListModal" role="dialog" aria-modal="true" aria-labelledby="synergyGuideTitleLabel" data-action="closeSynergyListModal">
+        <div class="stats-content" data-action="stopPropagation" data-action-stop style="max-width: 700px;">
+            <div class="stats-header">
+                <h2 id="synergyGuideTitleLabel">Guide des Synergies</h2>
+                <button class="stats-close" data-action="closeSynergyListModal">&#10005;</button>
+            </div>
+            <div id="synergyListContent" class="synergy-list-grid"></div>
+        </div>
+    </div>
+    <div id="pensionContributionPopover" class="pension-contribution-popover">
+        <div id="pensionContributionContent"></div>
+    </div>
+    <div class="stats-modal" id="relicModal" role="dialog" aria-modal="true" aria-labelledby="relicRewardTitleLabel">
+        <div class="stats-content" style="text-align: center;">
+            <div class="stats-header">
+                <h2 id="relicRewardTitleLabel">Recompense d'Etage</h2>
+            </div>
+            <p id="relicRewardBodyLabel" style="margin-bottom: 20px;">Choisissez une relique pour la suite de l'ascension :</p>
+            <div id="relicOptionsGrid"
+                style="display: flex; justify-content: center; gap: 15px; flex-wrap: wrap; margin-top: 15px;"></div>
+        </div>
+    </div>
+    <div class="stats-modal capture-modal js-modal-overlay" id="captureModal" role="dialog" aria-modal="true" aria-labelledby="capturePanelTitleLabel">
+        <div class="stats-content capture-modal-content" data-action="stopPropagation" data-action-stop>
+            <div class="stats-header">
+                <h2 id="capturePanelTitleLabel">Capture</h2>
+                <button class="stats-close" data-action="skipCapture">&#10005;</button>
+            </div>
+            <div id="captureModalBody" class="capture-modal-body"></div>
+        </div>
+    </div>
+    <!-- Modal de sélection des cibles de capture -->
+    <!-- Popup compact de sélection des cibles de capture -->
+    <div class="compact-popup" id="captureTargetWrapper">
+        <div class="stats-header">
+            <h2 id="captureTargetTitleLabel">Cibles de Capture</h2>
+            <button class="stats-close"
+                data-action="closeCaptureTarget">&#10005;</button>
+        </div>
+        <div class="popup-content">
+            <p id="captureTargetHintLabel" style="text-align: center; margin-bottom: 8px;">
+                Cliquez sur les Pokémon à capturer automatiquement.
+            </p>
+            <div class="capture-target-toolbar">
+                <span id="captureTargetLimit" class="capture-target-limit"></span>
+                <button id="captureTargetClearBtn" class="capture-target-clear-btn"
+                    data-action="clearCaptureTargets" type="button">
+                    <span id="captureTargetClearLabel">Tout vider</span>
+                </button>
+            </div>
+            <div id="captureTargetGrid" class="capture-target-grid"></div>
+        </div>
+    </div>
+
+    <!-- Tooltip enrichi pour le bouton Auto -->
+    <div class="auto-tooltip" id="autoTooltip">
+        <div id="autoTooltipTitleLabel"
+            style="margin-bottom:6px; font-weight:bold; color:#fbbf24; border-bottom:1px solid rgba(255,255,255,0.2); padding-bottom:4px;">
+            Statut Auto
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+            <span id="autoTooltipModeLabel">Mode Auto :</span>
+            <span id="tooltipStatus" class="tooltip-status">OFF</span>
+        </div>
+        <div class="tooltip-detail auto-classic-only" id="autoTooltipDisRow">
+            <span id="autoTooltipDisLabel">Désavantage Switch :</span>
+            <span id="tooltipDisadvantage" class="tooltip-status off">OFF</span>
+        </div>
+        <div class="tooltip-detail">
+            <span id="autoTooltipStaminaLabel">Endurance Switch :</span>
+            <span id="tooltipStamina" class="tooltip-status off">OFF</span>
+        </div>
+        <div class="tooltip-detail auto-classic-only" id="autoTooltipAdvRow">
+            <span id="autoTooltipAdvLabel">Avantage Switch :</span>
+            <span id="tooltipAdvantage" class="tooltip-status off">OFF</span>
+        </div>
+        <div class="tooltip-detail">
+            <span id="autoTooltipUltLabel">Ultime Auto :</span>
+            <span id="tooltipUltimate" class="tooltip-status off">OFF</span>
+        </div>
+        <div class="tooltip-detail auto-classic-only" id="autoTooltipOptimalRow">
+            <span id="autoTooltipOptimalLabel">Moves :</span>
+            <span id="tooltipOptimalMoves" class="tooltip-status off">ORDRE</span>
+        </div>
+        <div class="tooltip-detail" id="autoTooltipAdvancedRow" hidden>
+            <span id="autoTooltipAdvancedLabel">Switch avancé :</span>
+            <span id="tooltipAdvanced" class="tooltip-status off">OFF</span>
+        </div>
+        <div class="tooltip-detail" id="autoTooltipPostureRow" hidden>
+            <span id="autoTooltipPostureLabel">Posture :</span>
+            <span id="tooltipPosture" class="tooltip-status">-</span>
+        </div>
+        <div class="tooltip-detail" id="autoTooltipSwitchGainRow" hidden>
+            <span id="autoTooltipSwitchGainLabel">Seuil switch :</span>
+            <span id="tooltipSwitchGain" class="tooltip-status">-</span>
+        </div>
+        <div class="tooltip-detail" id="autoTooltipRespectPreferredRow" hidden>
+            <span id="autoTooltipRespectPreferredLabel">Respect actif :</span>
+            <span id="tooltipRespectPreferred" class="tooltip-status off">OFF</span>
+        </div>
+    </div>
+
+    <!-- Tooltip enrichi pour le bouton Capture -->
+    <div class="capture-tooltip" id="captureTooltip">
+        <div id="captureTooltipTitleLabel"
+            style="margin-bottom:6px; font-weight:bold; color:#fbbf24; border-bottom:1px solid rgba(255,255,255,0.2); padding-bottom:4px;">
+            Capture Ciblée
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+            <span id="captureTooltipStateLabel">Etat :</span>
+            <span id="tooltipCaptureStatus" class="tooltip-status">OFF</span>
+        </div>
+        <div id="captureTooltipTargetsBlock" style="margin:6px 0 4px;">
+            <div id="captureTooltipTargetsLabel" style="font-size:11px; color:#cbd5e1; margin-bottom:4px;">Cibles :</div>
+            <div id="captureTooltipTargetsList" class="capture-tooltip-targets"></div>
+        </div>
+        <div id="captureTooltipHintLabel" style="font-size:11px; color:#aaa; font-style:italic;">
+            Cliquez pour définir les cibles.
+        </div>
+    </div>
+
+    <!-- Tooltip enrichi pour le bouton Fuite -->
+    <div class="forfeit-tooltip" id="forfeitTooltip">
+        <div id="forfeitTooltipTitleLabel"
+            style="margin-bottom:6px; font-weight:bold; color:#ef4444; border-bottom:1px solid rgba(255,255,255,0.2); padding-bottom:4px;">
+            Abandon / Fuite
+        </div>
+        <div id="forfeitTooltipBodyLabel" style="font-size:12px; color:#e5e7eb;">
+            Quitter le combat en cours.
+        </div>
+        <div id="forfeitTooltipHintLabel" style="font-size:11px; color:#aaa; font-style:italic; margin-top:4px;">
+            Compte comme une défaite.
+        </div>
+    </div>
+
+
+
+
+    <!-- Popup compact de configuration Auto -->
+    <div class="compact-popup" id="autoSettingsModal" role="dialog" aria-modal="true" aria-labelledby="autoSettingsTitleLabel">
+        <div class="stats-header">
+            <h2 id="autoSettingsTitleLabel">Mode Auto</h2>
+            <button class="stats-close" data-action="closeAutoSettings">&#10005;</button>
+        </div>
+        <!-- Toggle principal ON/OFF -->
+
+        <div class="popup-content">
+            <!-- Toggle principal ON/OFF (Style harmonisé) -->
+            <div class="auto-master-item">
+                <span id="autoMasterLabel">Activer le Mode Auto</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="autoMasterToggle">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <div style="width: 100%; height: 1px; background: rgba(255,255,255,0.1); margin: 10px 0;"></div>
+
+            <p id="autoSettingsFeaturesLabel" style="text-align: center; margin-bottom: 12px; font-size: 13px; color: #aaa;">Fonctionnalités actives :
+            </p>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+                <div id="autoClassicOptions" style="display: flex; flex-direction: column; gap: 8px;">
+                    <label class="auto-setting-item">
+                        <input type="checkbox" id="autoSwitchDisadvantageCheck" checked>
+                        <span class="auto-setting-label">
+                            <strong id="autoSettingDisTitleLabel">Switch Desavantage</strong>
+                            <small id="autoSettingDisDescLabel">Remplace un Pokémon en désavantage de type</small>
+                        </span>
+                    </label>
+                    <label class="auto-setting-item">
+                        <input type="checkbox" id="autoSwitchAdvantageCheck" checked>
+                        <span class="auto-setting-label">
+                            <strong id="autoSettingAdvTitleLabel">Switch Avantage</strong>
+                            <small id="autoSettingAdvDescLabel">Envoie un Pokémon avec avantage de type (ex. Eau vs Feu)</small>
+                        </span>
+                    </label>
+                    <label class="auto-setting-item">
+                        <input type="checkbox" id="autoOptimalMovesCheck">
+                        <span class="auto-setting-label">
+                            <strong id="autoSettingOptimalTitleLabel">Moves optimaux</strong>
+                            <small id="autoSettingOptimalDescLabel">Choisir la capacite par simulation de degats (sans critique).</small>
+                        </span>
+                    </label>
+                    <div class="combat-controls-wrapper auto-settings-combat-controls">
+                        <button type="button" id="optimalMoveToggleBtn" class="optimal-move-toggle-btn move-mode-badge--list"
+                            data-action="toggleOptimalMoveSelection" aria-pressed="false"
+                            title="">ORDRE</button>
+                    </div>
+                </div>
+                <div id="autoCommonOptions" style="display: flex; flex-direction: column; gap: 8px;">
+                    <label class="auto-setting-item">
+                        <input type="checkbox" id="autoSwitchStaminaCheck" checked>
+                        <span class="auto-setting-label">
+                            <strong id="autoSettingStaminaTitleLabel">Switch Endurance</strong>
+                            <small id="autoSettingStaminaDescLabel">Remplace un Pokémon à 0 endurance</small>
+                        </span>
+                    </label>
+                    <label class="auto-setting-item">
+                        <input type="checkbox" id="autoUltimateCheck" checked>
+                        <span class="auto-setting-label">
+                            <strong id="autoSettingUltTitleLabel">Ultime Auto</strong>
+                            <small id="autoSettingUltDescLabel">Lance l'ultime quand la jauge est pleine</small>
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <div id="autoAdvancedSection" class="auto-advanced-section auto-locked">
+                <div style="width: 100%; height: 1px; background: rgba(255,255,255,0.1); margin: 12px 0 10px;"></div>
+                <div class="auto-advanced-section-heading">
+                    <strong id="autoAdvancedSectionTitleLabel">Auto Fight Advanced</strong>
+                    <span id="autoAdvancedUnlockedBadge" class="auto-advanced-unlocked-badge" hidden>Débloqué</span>
+                </div>
+                <p id="autoAdvancedLockedLabel" class="auto-advanced-locked-hint" hidden></p>
+                <label class="auto-setting-item">
+                    <input type="checkbox" id="autoSwitchAdvancedCheck">
+                    <span class="auto-setting-label">
+                        <strong id="autoSettingAdvancedTitleLabel">Switch avancé</strong>
+                        <small id="autoSettingAdvancedDescLabel">Switch intelligent EHP / offense</small>
+                    </span>
+                </label>
+                <div id="autoAdvancedPresetRow" class="auto-advanced-preset-row" role="group" aria-labelledby="autoAdvancedPresetLabel">
+                    <span id="autoAdvancedPresetLabel" class="auto-advanced-preset-label">Profil</span>
+                    <div class="auto-advanced-preset-buttons">
+                        <button type="button" id="autoAdvancedPresetSafe" class="auto-advanced-preset-btn" data-preset="safe">Safe</button>
+                        <button type="button" id="autoAdvancedPresetBalanced" class="auto-advanced-preset-btn active" data-preset="balanced">Équilibré</button>
+                        <button type="button" id="autoAdvancedPresetAggressive" class="auto-advanced-preset-btn" data-preset="aggressive">Agressif</button>
+                        <button type="button" id="autoAdvancedPresetCustom" class="auto-advanced-preset-btn" data-preset="custom">Perso</button>
+                    </div>
+                </div>
+                <div id="autoAdvancedCustomPanel">
+                <div class="save-manager-slider-row auto-advanced-slider-row">
+                    <div class="save-manager-slider-header">
+                        <span class="auto-slider-label-row">
+                            <span id="autoFightPostureLabel">Posture switch</span>
+                            <button type="button" id="autoFightPostureHelp" class="auto-slider-help-icon"
+                                aria-label="?" tabindex="0">?</button>
+                        </span>
+                        <span id="autoFightPostureValue" class="save-manager-slider-value">Équilibré</span>
+                    </div>
+                    <input id="autoFightPostureSlider" class="save-manager-slider" type="range" min="0" max="100" step="1" value="50">
+                </div>
+                <div class="save-manager-slider-row auto-advanced-slider-row">
+                    <div class="save-manager-slider-header">
+                        <span class="auto-slider-label-row">
+                            <span id="autoFightMovePrefLabel">Préférence moves</span>
+                            <button type="button" id="autoFightMovePrefHelp" class="auto-slider-help-icon"
+                                aria-label="?" tabindex="0">?</button>
+                        </span>
+                        <span id="autoFightMovePrefValue" class="save-manager-slider-value">Dégâts</span>
+                    </div>
+                    <input id="autoFightMovePrefSlider" class="save-manager-slider" type="range" min="0" max="100" step="1" value="0">
+                </div>
+                <div class="save-manager-slider-row auto-advanced-slider-row">
+                    <div class="save-manager-slider-header">
+                        <span class="auto-slider-label-row">
+                            <span id="autoFightSwitchGainLabel">Sensibilité switch</span>
+                            <button type="button" id="autoFightSwitchGainHelp" class="auto-slider-help-icon"
+                                aria-label="?" tabindex="0">?</button>
+                        </span>
+                        <span id="autoFightSwitchGainValue" class="save-manager-slider-value">20%</span>
+                    </div>
+                    <input id="autoFightSwitchGainSlider" class="save-manager-slider" type="range" min="10" max="40" step="5" value="20">
+                    <small id="autoFightSwitchGainHint" class="auto-condition-hint">Gain minimum pour changer de Pokémon.</small>
+                </div>
+                <div id="autoAdvancedConditions" class="auto-advanced-conditions">
+                    <label class="auto-setting-item auto-setting-item--compact">
+                        <input type="checkbox" id="autoAdvancedRespectPreferredCheck" checked>
+                        <span class="auto-setting-label">
+                            <small id="autoAdvancedRespectPreferredLabel">Respecter mon Pokémon actif à l'entrée</small>
+                            <small id="autoAdvancedRespectPreferredHint" class="auto-condition-hint">Ne switch pas au début sur le premier de l'équipe.</small>
+                        </span>
+                    </label>
+                    <div class="auto-exclude-slots-row">
+                        <label class="auto-exclude-slot-label">
+                            <span id="autoExcludeSlot1Label">Exclure slot 1</span>
+                            <select id="autoExcludeSlot1Select" class="auto-exclude-slot-select">
+                                <option value="-1">—</option>
+                            </select>
+                        </label>
+                        <label class="auto-exclude-slot-label">
+                            <span id="autoExcludeSlot2Label">Exclure slot 2</span>
+                            <select id="autoExcludeSlot2Select" class="auto-exclude-slot-select">
+                                <option value="-1">—</option>
+                            </select>
+                        </label>
+                    </div>
+                    <label class="auto-setting-item auto-setting-item--compact">
+                        <input type="checkbox" id="autoAdvancedNeverWeakCheck" checked>
+                        <span class="auto-setting-label">
+                            <span class="auto-slider-label-row">
+                                <small id="autoAdvancedNeverWeakLabel">Ne jamais envoyer un Pokémon faible</small>
+                                <button type="button" id="autoAdvancedNeverWeakHelp" class="auto-slider-help-icon"
+                                    aria-label="?" tabindex="0">?</button>
+                            </span>
+                            <small id="autoAdvancedNeverWeakHint" class="auto-condition-hint">Bloque si efficacité offensive &lt; 1.</small>
+                        </span>
+                    </label>
+                    <label class="auto-setting-item auto-setting-item--compact">
+                        <input type="checkbox" id="autoAdvancedAvoidDoubleWeakCheck" checked>
+                        <span class="auto-setting-label">
+                            <span class="auto-slider-label-row">
+                                <small id="autoAdvancedAvoidDoubleWeakLabel">Éviter les doubles faiblesses</small>
+                                <button type="button" id="autoAdvancedAvoidDoubleWeakHelp" class="auto-slider-help-icon"
+                                    aria-label="?" tabindex="0">?</button>
+                            </span>
+                            <small id="autoAdvancedAvoidDoubleWeakHint" class="auto-condition-hint">Bloque si dégâts subis ×2.25 vs type ennemi probable.</small>
+                        </span>
+                    </label>
+                    <label class="auto-setting-item auto-setting-item--compact">
+                        <input type="checkbox" id="autoAdvancedSkipFinishCheck" checked>
+                        <span class="auto-setting-label">
+                            <small id="autoAdvancedSkipFinishLabel">Ne pas switch si KO rapide possible</small>
+                            <small id="autoAdvancedSkipFinishHint" class="auto-condition-hint">Reste si 2 coups suffisent à KO.</small>
+                        </span>
+                    </label>
+                    <label class="auto-setting-item auto-setting-item--compact">
+                        <input type="checkbox" id="autoAdvancedPreferXpCheck">
+                        <span class="auto-setting-label">
+                            <span class="auto-slider-label-row">
+                                <small id="autoAdvancedPreferXpLabel">Mode XP</small>
+                                <button type="button" id="autoAdvancedPreferXpHelp" class="auto-slider-help-icon"
+                                    aria-label="?" tabindex="0">?</button>
+                            </span>
+                            <small id="autoAdvancedPreferXpHint" class="auto-condition-hint">Favorise les Pokémon qui peuvent encore monter de niveau ; malus au niveau max.</small>
+                        </span>
+                    </label>
+                </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="stats-modal starter-modal js-modal-overlay" id="starterModal" role="dialog" aria-modal="true" aria-labelledby="starterTitleLabel">
+        <div class="stats-content starter-modal-content narrative-game-modal">
+            <div class="narrative-dialogue-inner starter-modal-inner">
+                <div class="narrative-chen-column">
+                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABgCAMAAACaG4TaAAAAQlBMVEUBAQEAAABqSkHevZzFlHPNzd5iWjFSQXM5SmqDc6x7g5z///+0rIv/5s2knHuLe0GsnFp7c1rNxZyslN5SOTHm3rTYcvUHAAAAAXRSTlMAQObYZgAAAy1JREFUeF7t1Qtr4zAQBGDv6i0/8+j//6s3K+ni2E0vXvfgoNyUEAKZj5FcSPfz8z+DZPoGMH18fFwlQ8kJ4frxlKt6zOUiE9ZgyUV5gFZsfYlGuKB4nRCR5G3QARCw2YzjOF2nK96MmZRnuEzDNEqwowKDCsDXGwCmAJdhIO0CY8YWgwU6AMJwMcyVYCJjJ+q0ADOJwMSIuQDQCWyNozrAGaMGvOFx7AtgqAfgDekBY0eJlb4aQHkNAKsEOjRqtwLqPmJL20Cwhknf79iMlhHLALozYTuaGurOJfgCeD4HxJhSYCKyIdCZuku3FKwkpBSjut6nWwU8+in0UWHE7HoBQkI/BCwBgBwlosv9Y0BAGVMKkHtSASEFD0CE4ADgRcf6UYA+oYv9Z4CMLzuHnhg3tIMAuUfoMIDJcvYbEsApgOjKFSDpARTQaYFwq0ml34BMOmA/wLn3G/IfgfeHiO4zAG990ZETvAJyXeGOA2kHxB4Bf+QKAGDAFnDlHxShNwP2QBKuAe4IkHOWqfsrAAD8C8HaR1+6XwBVyMge4HHk1s8oA3kBOETmvZrA1hjmiJTL3gPAGkAxI58Ay0XA0UtcA1J6BlwFIuogaHN++e1DmGrTxVIISVKBdoC2DcQTgLq1FoC1EByyAZDgWr1v2QKMNjMbKzOoAcgKZFdZooewOQKNPNqR0X8NhMKVW2ob9o+BiQjdcglPQCQKksJxvSdufQC7kCSufYSoMBW1DWhXSN2LlH5l8h5Anwxiad/erwAERoDsvSfEV4Aj6pYidW/TAD/LH+KdCOSiRAXMK1BNhDr1gvPA8m1g8f8UyPMiwnnALwKQHhChAQiAZQNEHQBh2QD5GID+HoAgObrgCfAA1pwClqwFIKzAeoajV4D42fu5Ad3jDNl76o4CcxuACibAQ+Z5PgrQCuBDsWBqgOU3II1TwLIC4JD5PNAEDQBhC+ACtRNmXwVaHyuifwy+eahqgSrQE+A1gN8C+NwEOj6gCX8TgABAIXh/GrjfiYlWAJ4GQFsChWgd5O/3u5/9of3oIoJQM4nuxaTjFyBtoj16VKjZoMRFBXA2Df1p+QWR71PnoUwOeQAAAABJRU5ErkJggg==" class="narrative-chen-sprite" alt="" aria-hidden="true" decoding="async">
+                </div>
+                <div class="narrative-content-column">
+                    <div class="narrative-speaker" id="starterSpeakerLabel">Professeur Chen</div>
+                    <h1 id="starterTitleLabel" class="narrative-story-quest-title starter-modal-title">Bienvenue, Dresseur !</h1>
+                    <p id="starterSubtitleLabel" class="narrative-text starter-modal-subtitle">Le monde des créatures vous attend. Choisissez
+                        votre premier compagnon pour débuter l'aventure.</p>
+                    <div id="starterResonancePanel" class="starter-resonance-panel" hidden>
+                        <p id="starterResonanceLead" class="starter-resonance-lead"></p>
+                        <ul class="starter-resonance-list">
+                            <li id="starterResonanceBulletAnchors"></li>
+                            <li id="starterResonanceBulletCap"></li>
+                            <li id="starterResonanceBulletCatchUp"></li>
+                            <li id="starterResonanceBulletEnd"></li>
+                        </ul>
+                        <p id="starterResonanceCta" class="starter-resonance-cta"></p>
+                    </div>
+                    <div class="narrative-starters starter-container" id="starterChoicesContainer">
+                        <button type="button" class="narrative-starter-btn" data-action="selectStarter" data-arg="grass">
+                            <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/1.png"
+                                class="starter-sprite" alt="" loading="lazy" decoding="async" fetchpriority="low">
+                            <span id="starterGrassNameLabel">Bulbizarre</span>
+                        </button>
+                        <button type="button" class="narrative-starter-btn" data-action="selectStarter" data-arg="fire">
+                            <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/4.png"
+                                class="starter-sprite" alt="" loading="lazy" decoding="async" fetchpriority="low">
+                            <span id="starterFireNameLabel">Salameche</span>
+                        </button>
+                        <button type="button" class="narrative-starter-btn" data-action="selectStarter" data-arg="water">
+                            <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/7.png"
+                                class="starter-sprite" alt="" loading="lazy" decoding="async" fetchpriority="low">
+                            <span id="starterWaterNameLabel">Carapuce</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="stats-modal js-modal-overlay" id="saveManagerModal" role="dialog" aria-modal="true" aria-labelledby="saveManagerTitleLabel" data-action="closeSaveManager">
+        <div class="stats-content js-modal-content farming-metrics-modal-content save-manager-modal-content" data-action="stopPropagation" data-action-stop style="max-width: 520px;">
+            <div class="stats-header">
+                <h2 id="saveManagerTitleLabel">&#9776; Menu Principal</h2>
+                <button class="stats-close" data-action="closeSaveManager">&#10005;</button>
+            </div>
+            <div class="farming-metrics-body save-manager-body">
+                <div class="save-manager-quick-grid">
+                    <button type="button" class="save-manager-quick-btn" data-action="openStatsAndCloseMenu">
+                        <span id="saveManagerStatsBtnLabel">Stats</span>
+                    </button>
+                    <button type="button" class="save-manager-quick-btn" data-action="openBonusAndCloseMenu">
+                        <span id="saveManagerBonusBtnLabel">Bonus</span>
+                    </button>
+                    <button type="button" class="save-manager-quick-btn" data-action="openLogAndCloseMenu">
+                        <span id="saveManagerJournalBtnLabel">Journal</span>
+                    </button>
+                </div>
+                <div class="farming-metrics-section save-manager-section">
+                    <div class="farming-metrics-section-title" id="menuDataTitle">Donn&eacute;es</div>
+                    <div class="save-manager-data-grid">
+                        <button type="button" class="save-manager-data-btn save-manager-data-btn-primary btn-save" data-action="handleSaveClick" data-action-self>
+                            <span id="optSaveLabel">Sauvegarder</span>
+                        </button>
+                        <button type="button" class="save-manager-data-btn" data-action="exportSaveFile">
+                            <span id="optExportLabel">Exporter</span>
+                        </button>
+                        <button type="button" class="save-manager-data-btn" data-action="importSaveFile">
+                            <span id="optImportLabel">Importer</span>
+                        </button>
+                        <a class="save-manager-data-btn save-manager-social-btn save-manager-social-discord"
+                           href="https://discord.gg/MTcngHhVG"
+                           target="_blank" rel="noopener noreferrer">
+                            <span id="optDiscordLabel">Discord</span>
+                        </a>
+                        <a class="save-manager-data-btn save-manager-social-btn save-manager-social-reddit"
+                           href="https://www.reddit.com/r/PokeTimeIdle/"
+                           target="_blank" rel="noopener noreferrer">
+                            <span id="optRedditLabel">Reddit</span>
+                        </a>
+                    </div>
+                </div>
+                <div class="farming-metrics-section save-manager-section">
+                    <div class="farming-metrics-section-title" id="menuOptionsTitle"><span id="menuOptionsTitleLabel">Options</span></div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optLanguageLabel">Langue</span>
+                        <select id="optLanguageSelect" class="save-manager-select">
+                            <option value="fr">Fran&ccedil;ais</option>
+                            <option value="en">English</option>
+                        </select>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optPauseRareLabel">Pause Rare</span>
+                        <button type="button" id="optPauseRare" data-action="toggleRarePause" class="save-manager-toggle-btn">?</button>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optNotifyRareLabel">Notifs Drops Rares</span>
+                        <button type="button" id="optNotifyRare" data-action="toggleNotifyRareDrop" class="save-manager-toggle-btn">?</button>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optNotifyEggLabel">Modals incubateur</span>
+                        <button type="button" id="optNotifyEgg" data-action="toggleNotifyEggHatch" class="save-manager-toggle-btn">?</button>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optNotifyCaptureLabel">Notifs Captures</span>
+                        <button type="button" id="optNotifyCapture" data-action="toggleNotifyCapture" class="save-manager-toggle-btn">?</button>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optNotifyDpsRecordLabel">Notifs Records DPS</span>
+                        <button type="button" id="optNotifyDpsRecord" data-action="toggleNotifyDpsRecord" class="save-manager-toggle-btn">?</button>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optDamagePopupModeLabel">Popups de dégâts</span>
+                        <select id="optDamagePopupModeSelect" class="save-manager-select" aria-labelledby="optDamagePopupModeLabel">
+                            <option value="raw" id="optDamagePopupModeRawOpt">Bruts</option>
+                            <option value="true" id="optDamagePopupModeTrueOpt">Réels (PV)</option>
+                        </select>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optRivalLabel">Rival</span>
+                        <button type="button" id="optRival" data-action="toggleRivalEnabled" class="save-manager-toggle-btn">?</button>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optTeamDisplayLabel">Affichage equipe</span>
+                        <button type="button" id="optTeamSpritesOnly" data-action="toggleTeamSpritesOnly" class="save-manager-toggle-btn" style="min-width: 78px;">?</button>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optReducedMotionLabel">Animations r&eacute;duites</span>
+                        <button type="button" id="optReducedMotion" data-action="toggleReducedMotion" class="save-manager-toggle-btn">?</button>
+                    </div>
+                    <div class="save-manager-option-row">
+                        <span class="save-manager-option-label" id="optAfkModeLabel">Mode AFK</span>
+                        <button type="button" id="optAfkMode" data-action="toggleAfkMode" class="save-manager-toggle-btn">?</button>
+                    </div>
+                    <div class="save-manager-slider-row">
+                        <div class="save-manager-slider-header">
+                            <span class="save-manager-option-label" id="optOfflineReportLabel">Rapport hors-ligne (seuil)</span>
+                            <span id="optOfflineReportValue" class="save-manager-slider-value">30s</span>
+                        </div>
+                        <input id="optOfflineReportSlider" class="save-manager-slider" type="range" min="30000" max="1800000" step="30000" value="30000">
+                    </div>
+                </div>
+                <div class="farming-metrics-section save-manager-section">
+                    <div class="farming-metrics-section-title"><span>Apparence</span></div>
+                    <div class="save-manager-skin-row">
+                        <span class="save-manager-option-label" id="optHeaderSkinLabel">Skin Header</span>
+                        <span id="optHeaderSkinUnlock" class="save-manager-skin-unlock">1/1 d&eacute;bloqu&eacute;s</span>
+                    </div>
+                    <select id="optHeaderSkinSelect" class="save-manager-select save-manager-select-full"></select>
+                    <div id="optHeaderSkinDesc" class="save-manager-skin-desc">Skin de base</div>
+                    <div class="save-manager-slider-row">
+                        <div class="save-manager-slider-header">
+                            <span class="save-manager-option-label" id="optHeaderPanelOpacityLabel">Transparence panneaux</span>
+                            <span id="optHeaderPanelOpacityValue" class="save-manager-slider-value">80%</span>
+                        </div>
+                        <input id="optHeaderPanelOpacitySlider" class="save-manager-slider" type="range" min="5" max="80" step="5" value="80">
+                    </div>
+                </div>
+                <div class="save-manager-danger-section">
+                    <button type="button" class="save-manager-reset-btn" data-action="resetGame">
+                        <span id="optResetLabel">R&eacute;initialiser le jeu</span>
+                    </button>
+                </div>
+                <div id="menuVersionLabel" class="save-manager-version">v0.1.0</div>
+            </div>
+        </div>
+    </div>
+    <div class="stats-modal js-modal-overlay" id="biomeMasteryModal" role="dialog" aria-modal="true" aria-labelledby="biomeMasteryTitleLabel"
+        data-action="closeBiomeMasteryModal">
+        <div class="stats-content mastery-frame-surface" style="max-width: 600px;" data-action="stopPropagation" data-action-stop>
+            <div class="stats-header">
+                <h2 id="biomeMasteryTitleLabel" class="mastery-frame-title">Maitrise des Biomes</h2>
+                <button class="stats-close"
+                    data-action="closeBiomeMasteryModal">&#10005;</button>
+            </div>
+            <p id="biomeMasterySubtitleLabel" style="color:#666; font-size:13px; margin-bottom:20px;">Effectuez des expéditions pour monter de niveau
+                dans chaque biome et réduire la durée des trajets !</p>
+            <div id="biomeMasteryListGrid" class="team-list" style="grid-template-columns: 1fr;"></div>
+        </div>
+    </div>
+    <div id="customTooltip" class="custom-tooltip"></div>
+    <div id="logModal" class="modal js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="logModalTitleLabel" data-action="closeLogModal">
+        <div class="modal-content log-modal-content" data-action="stopPropagation" data-action-stop>
+            <div class="modal-header-logs">
+                <h2 id="logModalTitleLabel">Journal d'Aventure</h2>
+                <button type="button" class="close-btn" data-action="closeLogModal" title="Fermer">&times;</button>
+            </div>
+            <div id="gameLog" class="log-console-scroll">
+                <div class="log-entry" id="logModalEmptyLabel" style="color:#94a3b8; font-style:italic; text-align:center; padding-top:20px;">Le
+                    journal enregistre les événements importants...</div>
+            </div>
+            <div class="modal-footer-logs">
+                <button class="btn" data-action="clearLogs"
+                    style="background: #ef4444; color: white; border:none; padding: 8px 16px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">&#x1F5D1;&#xFE0F;
+                    <span id="logModalClearLabel">Effacer l'historique</span></button>
+            </div>
+        </div>
+    </div>
+    <div id="offlineModal" class="modal-overlay js-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="offlineModalTitle">
+        <div class="modal-content stats-content js-modal-content farming-metrics-modal-content" data-action="stopPropagation" data-action-stop style="max-width: 520px;">
+            <div class="stats-header">
+                <h2 id="offlineModalTitle">Rapport hors-ligne</h2>
+                <button type="button" class="stats-close js-close-modal" data-action="closeOfflineModal" title="Fermer">&#10005;</button>
+            </div>
+            <div class="farming-metrics-body" id="offlineModalBody"></div>
+        </div>
+    </div>
+    <!-- Bootstrap is now handled by src/main.ts (Vite) -->
+
+    <!-- Cloudflare Web Analytics -->
+    <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
+        data-cf-beacon='{"token": "d220d1fc691a4f9e985e1b2fc1e0d15b"}'></script>
+    <!-- End Cloudflare Web Analytics -->
+</body>
+
+</html>
