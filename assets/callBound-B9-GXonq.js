@@ -1,0 +1,1 @@
+function u(t,n){typeof n=="function"&&n.call(t)}function r(t,n,...e){if(typeof n=="function")return n.call(t,...e)}function a(t,n,e,c=e){const i=r(t,n,e);return typeof i=="number"&&Number.isFinite(i)?i:c}export{a as n,u as r,r as t};
