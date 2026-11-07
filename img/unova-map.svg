@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1600" role="img" aria-labelledby="title desc">
+  <title id="title">Unova Region Map</title>
+  <desc id="desc">Stylized Unova map for region navigation with butterfly-shaped landmass.</desc>
+  <defs>
+    <linearGradient id="ocean" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7eb8e8"/>
+      <stop offset="100%" stop-color="#3d6fa8"/>
+    </linearGradient>
+    <linearGradient id="land" x1="0" y1="0" x2="0.7" y2="1">
+      <stop offset="0%" stop-color="#9ed46a"/>
+      <stop offset="50%" stop-color="#6fa84a"/>
+      <stop offset="100%" stop-color="#4a7c32"/>
+    </linearGradient>
+    <linearGradient id="urban" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c4b896"/>
+      <stop offset="100%" stop-color="#8a7d5c"/>
+    </linearGradient>
+    <linearGradient id="mountain" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#b8c0c8"/>
+      <stop offset="100%" stop-color="#6e7880"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#1a3d5c" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="1600" fill="url(#ocean)"/>
+
+  <g filter="url(#shadow)">
+    <!-- Main butterfly landmass (Unova) -->
+    <path d="M720 1320 L680 1280 L620 1260 L560 1240 L500 1220 L440 1180 L380 1140 L340 1080 L320 1000 L340 920 L380 860 L420 800 L460 740 L500 680 L540 620 L580 560 L620 500 L660 440 L700 380 L740 320 L780 280 L820 260 L860 280 L900 320 L940 380 L980 440 L1020 500 L1040 560 L1050 620 L1040 680 L1000 740 L960 800 L920 860 L880 920 L840 980 L800 1040 L760 1100 L740 1160 L720 1220 Z"
+          fill="url(#land)" stroke="#2d5a22" stroke-width="7"/>
+    <!-- West wing -->
+    <path d="M280 980 L320 920 L360 880 L400 860 L420 900 L400 960 L360 1020 L300 1040 L260 1000 Z"
+          fill="url(#land)" stroke="#2d5a22" stroke-width="6"/>
+    <!-- East peninsula (Undella coast) -->
+    <path d="M980 1080 L1020 1040 L1060 1020 L1100 1040 L1120 1080 L1100 1140 L1040 1160 L980 1120 Z"
+          fill="url(#land)" stroke="#2d5a22" stroke-width="6"/>
+    <!-- North mountain (Victory Road / League) -->
+    <path d="M520 320 L580 280 L640 260 L700 280 L760 320 L780 380 L740 440 L680 460 L620 440 L560 400 L520 360 Z"
+          fill="url(#mountain)" stroke="#4a5258" stroke-width="5"/>
+    <!-- Castelia urban core -->
+    <ellipse cx="620" cy="720" rx="90" ry="55" fill="url(#urban)" stroke="#5a5040" stroke-width="4" opacity="0.85"/>
+    <!-- Skyarrow bridge hint -->
+    <line x1="680" y1="900" x2="820" y2="820" stroke="#8a9aaa" stroke-width="6" stroke-linecap="round" opacity="0.6"/>
+    <line x1="420" y1="760" x2="520" y2="680" stroke="#8a9aaa" stroke-width="5" stroke-linecap="round" opacity="0.5"/>
+  </g>
+
+  <text x="600" y="80" text-anchor="middle" font-family="system-ui,sans-serif" font-size="42" font-weight="700" fill="#e8f4ff">UNOVA</text>
+</svg>
