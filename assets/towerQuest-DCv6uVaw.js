@@ -1,0 +1,1 @@
+var t=new Set(["tower_floor","towerFloor","towerRecord"]);function e(r){return r?typeof r.trackingKey=="string"&&t.has(r.trackingKey)?!0:typeof r.id=="string"&&/^story_tower_/.test(r.id):!1}export{e as t};

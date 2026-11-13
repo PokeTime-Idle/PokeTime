@@ -1,0 +1,1 @@
+function t(n){n&&(typeof n.updateIncubatorsDisplay=="function"&&n.updateIncubatorsDisplay(),typeof n.syncEggsInventoryDisplay=="function"?n.syncEggsInventoryDisplay():typeof n.updateEggsDisplay=="function"&&n.updateEggsDisplay())}export{t as syncBagEggSectionsUI};
