@@ -1,0 +1,1 @@
+import{U as a,it as n,nt as r}from"./index-client-CVUEzaLZ.js";import{d as s}from"./pub-BkGfCfFA.js";import{t as i}from"./useFacadeSubscription-B-5N4VAS.js";function G(){let t=n(0);i(s.LANGUAGE_CHANGED,()=>{r(t,a(t)+1)});function e(){a(t)}return{trackGameLanguage:e}}export{G as t};

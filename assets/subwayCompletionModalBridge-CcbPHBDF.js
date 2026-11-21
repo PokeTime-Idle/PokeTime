@@ -1,0 +1,1 @@
+import{t as e}from"./lazyModalMounts-UBnTCW8j.js";var o=null,i=null,n=null;function s(l,a){if(o=l,i=a,o&&n){const t=n;n=null,o(t)}}async function d(l){const a=o;if(a){n=null,a(l);return}if(!(typeof document>"u")&&(n=l,await e("subwayCompletionModal"),o&&n)){const t=n;n=null,o(t)}}function r(){n=null,i?.()}export{s as n,d as r,r as t};
