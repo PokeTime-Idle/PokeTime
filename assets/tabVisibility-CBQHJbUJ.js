@@ -1,0 +1,1 @@
+import{i}from"./breakpoints-DDzjW7s2.js";function r(n){if(typeof document>"u"||typeof document.getElementById!="function")return!1;const e=document.getElementById(n);if(!e)return!1;if(e.hidden||!e.classList.contains("active"))return!0;if(i()){const t=document.getElementById("secondaryContent");if(t&&!t.classList.contains("mobile-active"))return!0}return!1}export{r as t};

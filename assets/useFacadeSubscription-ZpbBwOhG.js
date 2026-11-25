@@ -1,0 +1,1 @@
+import{n as t}from"./vendor-svelte-hsul8yyF.js";import{t as c}from"./gameFacade-CcL6pZwY.js";function f(o,s){const a=(Array.isArray(o)?o:[o]).map(r=>c.subscribe(r,s));t(()=>{for(const r of a)r()})}export{f as t};

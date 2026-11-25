@@ -1,0 +1,1 @@
+import{vr as m}from"./i18n-data-tyJTW2Mz.js";function E(t,i,o){if(!t||!i||typeof t!="string"||typeof i!="string")return 1;const n=t.trim().toLowerCase(),f=i.trim().toLowerCase(),s=m[n]||m[t];if(!s)return 1;let r=s[f]??s[i]??1;if(o&&typeof o=="string"){const u=o.trim().toLowerCase();u&&(r*=s[u]??s[o]??1)}return r}function l(t,i,o){return E(t,i,o)===0}export{l as n,E as t};

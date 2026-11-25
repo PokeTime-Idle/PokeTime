@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PokéTime – Jeu Pokémon Idle &amp; Incrémental gratuit (Navigateur)</title>
+    <meta name="description" content="PokéTime est un jeu Pokémon idle &amp; incrémental gratuit dans ton navigateur. Capture et entraîne des Pokémon dans 9 régions, grimpe la Tour des Champions et progresse même hors-ligne. Sans téléchargement ni compte.">
+    <meta name="theme-color" content="#0f172a">
+    <link rel="icon" type="image/png" sizes="256x256" href="../img/favicon.png">
+    <link rel="icon" type="image/x-icon" sizes="16x16 24x24 32x32 48x48 64x64" href="../img/favicon.ico">
+    <link rel="canonical" href="https://poketime-idle.com/fr/">
+    <link rel="alternate" hreflang="en" href="https://poketime-idle.com/en/">
+    <link rel="alternate" hreflang="fr" href="https://poketime-idle.com/fr/">
+    <link rel="alternate" hreflang="x-default" href="https://poketime-idle.com/en/">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="PokéTime">
+    <meta property="og:locale" content="fr_FR">
+    <meta property="og:locale:alternate" content="en_US">
+    <meta property="og:title" content="PokéTime – Jeu Pokémon Idle &amp; Incrémental gratuit">
+    <meta property="og:description" content="Capture et entraîne des Pokémon dans 9 régions, grimpe la Tour des Champions, progresse même hors-ligne. Gratuit, dans ton navigateur.">
+    <meta property="og:url" content="https://poketime-idle.github.io/PokeTime/fr/">
+    <meta property="og:image" content="https://poketime-idle.github.io/PokeTime/img/landing/og-image.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="PokéTime – Jeu Pokémon Idle &amp; Incrémental gratuit">
+    <meta name="twitter:description" content="Capture et entraîne des Pokémon dans 9 régions, grimpe la Tour des Champions, progresse même hors-ligne. Gratuit, dans ton navigateur.">
+    <meta name="twitter:image" content="https://poketime-idle.github.io/PokeTime/img/landing/og-image.png">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "VideoGame",
+        "name": "PokéTime",
+        "url": "https://poketime-idle.github.io/PokeTime/fr/",
+        "description": "PokéTime est un jeu Pokémon idle et incrémental gratuit qui se joue dans le navigateur : capture et entraîne des Pokémon, explore 9 régions, grimpe la Tour des Champions et progresse même hors-ligne.",
+        "genre": ["Jeu idle", "Jeu incrémental", "Jeu de rôle"],
+        "gamePlatform": ["Web Browser", "Windows"],
+        "applicationCategory": "Game",
+        "operatingSystem": "Any",
+        "playMode": "SinglePlayer",
+        "inLanguage": ["fr", "en"],
+        "image": "https://poketime-idle.github.io/PokeTime/img/landing/og-image.png",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR", "availability": "https://schema.org/InStock" }
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            { "@type": "Question", "name": "PokéTime est-il gratuit ?", "acceptedAnswer": { "@type": "Answer", "text": "Oui. PokéTime est entièrement gratuit, sans publicité et sans compte à créer." } },
+            { "@type": "Question", "name": "Faut-il télécharger quelque chose ?", "acceptedAnswer": { "@type": "Answer", "text": "Non. Le jeu fonctionne dans ton navigateur sur ordinateur et mobile. Une application Windows optionnelle est aussi disponible sur GitHub." } },
+            { "@type": "Question", "name": "Le jeu progresse-t-il quand je suis absent ?", "acceptedAnswer": { "@type": "Answer", "text": "Oui. PokéTime est un jeu idle : ta progression est calculée hors-ligne et un rapport s'affiche à ton retour." } },
+            { "@type": "Question", "name": "Où est stockée ma sauvegarde ?", "acceptedAnswer": { "@type": "Answer", "text": "En local dans ton navigateur. Tu peux exporter et importer ta sauvegarde au format JSON. Rien n'est envoyé à un serveur de jeu." } },
+            { "@type": "Question", "name": "PokéTime est-il disponible dans d'autres langues ?", "acceptedAnswer": { "@type": "Answer", "text": "Le jeu est disponible en français et en anglais." } },
+            { "@type": "Question", "name": "PokéTime est-il un jeu Pokémon officiel ?", "acceptedAnswer": { "@type": "Answer", "text": "Non. C'est un projet de fan non officiel, sans lien avec Nintendo, Game Freak ou The Pokémon Company." } }
+        ]
+    }
+    </script>
+    <style>
+        :root { --bg:#0b1020; --panel:#121a30; --border:#2b3a6d; --text:#e8ecff; --muted:#9aa6d1; --accent:#60a5fa; --gold:#f59e0b; }
+        * { box-sizing: border-box; }
+        body { margin:0; font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif; background:radial-gradient(1200px 600px at 10% -20%,#1f2f6a 0%,transparent 70%),radial-gradient(1000px 500px at 100% 0%,#3a1d58 0%,transparent 70%),var(--bg); color:var(--text); line-height:1.6; }
+        a { color:var(--accent); }
+        .wrap { max-width:960px; margin:0 auto; padding:0 20px; }
+        header.top { display:flex; justify-content:flex-end; padding:14px 0; font-size:14px; }
+        header.top a { color:var(--muted); text-decoration:none; }
+        header.top a:hover { color:var(--text); }
+        .hero { text-align:center; padding:12px 0 40px; }
+        .logo { display:inline-block; background:#fff; border-radius:16px; padding:6px 18px; max-width:100%; }
+        .logo img { display:block; width:520px; max-width:100%; height:auto; }
+        h1 { font-size:clamp(26px,5vw,40px); line-height:1.2; margin:24px 0 12px; }
+        .lead { color:var(--muted); font-size:18px; max-width:680px; margin:0 auto 28px; }
+        .cta { display:inline-block; background:var(--gold); color:#1a1200; font-weight:700; font-size:20px; padding:14px 40px; border-radius:12px; text-decoration:none; box-shadow:0 6px 24px rgba(245,158,11,.35); }
+        .cta:hover { filter:brightness(1.08); }
+        .badges { margin-top:14px; color:var(--muted); font-size:14px; }
+        section { padding:28px 0; }
+        h2 { font-size:26px; margin:0 0 16px; }
+        .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; }
+        .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+        .card h3 { margin:0 0 6px; font-size:18px; color:var(--gold); }
+        .card p { margin:0; color:var(--muted); font-size:15px; }
+        .shots { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; }
+        .shots img { width:100%; height:auto; border-radius:10px; border:1px solid var(--border); display:block; background:var(--panel); }
+        details { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 16px; margin-bottom:10px; }
+        summary { cursor:pointer; font-weight:600; }
+        details p { color:var(--muted); margin:10px 0 0; }
+        .links { display:flex; flex-wrap:wrap; gap:12px 24px; }
+        footer { border-top:1px solid var(--border); margin-top:24px; padding:22px 0 40px; color:var(--muted); font-size:13px; text-align:center; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <header class="top"><a href="../en/" hreflang="en" lang="en">English</a></header>
+
+        <main>
+            <div class="hero">
+                <a class="logo" href="../" aria-label="Jouer à PokéTime"><img src="../img/start-menu.webp" width="1982" height="544" alt="Logo PokéTime – jeu Pokémon idle" fetchpriority="high"></a>
+                <h1>PokéTime – Jeu Pokémon Idle &amp; Incrémental gratuit</h1>
+                <p class="lead">Capture, entraîne et fais évoluer des Pokémon dans 9 régions, dans un jeu idle gratuit qui se joue directement dans ton navigateur. Ton équipe continue de combattre et de progresser, même quand tu n'es pas là.</p>
+                <a class="cta" href="../">▶ Jouer maintenant</a>
+                <p class="badges">Gratuit · Sans téléchargement · Sans compte · Français &amp; anglais</p>
+            </div>
+
+            <section aria-labelledby="features">
+                <h2 id="features">Qu'est-ce que PokéTime ?</h2>
+                <p>PokéTime est un jeu de fan Pokémon non officiel, de type idle / incrémental. Compose ton équipe, chasse les shinies, débloque de nouvelles zones et regarde tes chiffres exploser. Quelques minutes pour optimiser ta stratégie, puis laisse tourner le jeu.</p>
+                <div class="grid">
+                    <div class="card"><h3>9 régions à explorer</h3><p>Voyage de Kanto à Paldea – Johto, Hoenn, Sinnoh, Unys, Kalos, Alola et Galar inclus – chacune avec ses zones, ses Pokémon et sa progression.</p></div>
+                    <div class="card"><h3>Combat &amp; capture en idle</h3><p>Combats en temps réel avec types, capacités et talents. Capture automatiquement, monte en niveau et fais évoluer tes Pokémon pendant que le jeu tourne tout seul.</p></div>
+                    <div class="card"><h3>Progression hors-ligne</h3><p>Ferme l'onglet et reviens plus tard : PokéTime calcule tes gains hors-ligne et t'affiche un rapport de ce que tu as obtenu.</p></div>
+                    <div class="card"><h3>Tour des Champions &amp; Battle Subway</h3><p>Mets ton équipe à l'épreuve avec des défis de fin de jeu : dresseurs plus coriaces, règles spéciales et récompenses.</p></div>
+                    <div class="card"><h3>Expéditions &amp; Team Rocket</h3><p>Envoie tes Pokémon en expédition, accomplis des quêtes et affronte la Team Rocket pour des récompenses rares.</p></div>
+                    <div class="card"><h3>Collection &amp; maîtrise</h3><p>Fais éclore des œufs, complète ton Pokédex, débloque des synergies d'équipe et spécialise-toi avec un système de maîtrise à long terme.</p></div>
+                </div>
+            </section>
+
+            <section aria-labelledby="screens">
+                <h2 id="screens">Captures d'écran</h2>
+                <div class="shots">
+                    <img src="../img/landing/shot-1.webp" width="1280" height="720" loading="lazy" alt="Écran de combat idle de PokéTime avec l'équipe Pokémon active face à des Pokémon sauvages">
+                    <img src="../img/landing/shot-2.webp" width="1280" height="720" loading="lazy" alt="Fiche détaillée d'un Pokémon dans PokéTime avec statistiques, IV, talent et capacité ultime">
+                    <img src="../img/landing/shot-3.webp" width="1280" height="720" loading="lazy" alt="Carte de sélection des régions et des zones de PokéTime">
+                </div>
+            </section>
+
+            <section aria-labelledby="faq">
+                <h2 id="faq">FAQ</h2>
+                <details><summary>PokéTime est-il gratuit ?</summary><p>Oui. PokéTime est entièrement gratuit, sans publicité et sans compte à créer.</p></details>
+                <details><summary>Faut-il télécharger quelque chose ?</summary><p>Non. Le jeu fonctionne dans ton navigateur sur ordinateur et mobile. Une <a href="https://github.com/PokeTime-Idle/PokeTime/releases/latest" rel="noopener">application Windows</a> optionnelle est aussi disponible.</p></details>
+                <details><summary>Le jeu progresse-t-il quand je suis absent ?</summary><p>Oui. C'est un jeu idle : ta progression est calculée hors-ligne et un rapport s'affiche à ton retour.</p></details>
+                <details><summary>Où est stockée ma sauvegarde ?</summary><p>En local dans ton navigateur. Tu peux exporter et importer ta sauvegarde au format JSON. Rien n'est envoyé à un serveur de jeu.</p></details>
+                <details><summary>PokéTime est-il disponible dans d'autres langues ?</summary><p>Le jeu est disponible en français et en anglais.</p></details>
+                <details><summary>PokéTime est-il un jeu Pokémon officiel ?</summary><p>Non. C'est un projet de fan non officiel, sans lien avec Nintendo, Game Freak ou The Pokémon Company.</p></details>
+            </section>
+
+            <section aria-labelledby="community">
+                <h2 id="community">Rejoins la communauté</h2>
+                <div class="links">
+                    <a href="https://discord.gg/PDCShbMx4S" rel="noopener">Discord (changelogs &amp; support)</a>
+                    <a href="https://www.reddit.com/r/PokeTimeIdle/" rel="noopener">Reddit r/PokeTimeIdle</a>
+                    <a href="https://github.com/PokeTime-Idle/PokeTime/releases/latest" rel="noopener">Application Windows</a>
+                    <a href="../en/" hreflang="en" lang="en">English version</a>
+                </div>
+                <p style="margin-top:24px"><a class="cta" href="../">▶ Jouer à PokéTime</a></p>
+            </section>
+        </main>
+
+        <footer>
+            <p>PokéTime est un projet de fan non officiel, sans lien avec Nintendo, Game Freak, Creatures Inc. ni The Pokémon Company, et non approuvé ni sponsorisé par eux. Pokémon et les noms des personnages Pokémon sont des marques de leurs propriétaires respectifs.</p>
+        </footer>
+    </div>
+</body>
+</html>

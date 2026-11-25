@@ -1,0 +1,1 @@
+import{U as e,et as n,tt as r}from"./vendor-svelte-hsul8yyF.js";import{d as s}from"./pub-D48skqtO.js";import{t as o}from"./useFacadeSubscription-ZpbBwOhG.js";function G(){let t=r(0);o(s.LANGUAGE_CHANGED,()=>{n(t,e(t)+1)});function a(){e(t)}return{trackGameLanguage:a}}export{G as t};
